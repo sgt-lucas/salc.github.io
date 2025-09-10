@@ -23,21 +23,35 @@
             </div>
         </header>
 
-        <nav class="app-nav">
+        <nav id="app-nav" class="app-nav">
             </nav>
 
         <main id="app-main" class="app-main">
             <div class="loading-spinner">
-                <p>Carregando dados...</p>
+                <p>Carregando aplicação...</p>
             </div>
         </main>
 
         <footer class="app-footer">
-            <p>Sistema de Gestão de Notas de Crédito v2.0.0</p>
+            <p>Sistema de Gestão de Notas de Crédito v2.0.0 | Desenvolvido conforme especificação</p>
         </footer>
     </div>
 
-    <div id="modal-container"></div>
+    <div id="modal-container">
+        </div>
+
+    <template id="modal-template">
+        <div class="modal-backdrop">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3 class="modal-title"></h3>
+                    <button class="modal-close-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                </div>
+            </div>
+        </div>
+    </template>
 
     <script src="main.js"></script>
 </body>
