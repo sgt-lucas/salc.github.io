@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-sqlalchemy
-pandas
-reportlab
-psycopg2-binary
