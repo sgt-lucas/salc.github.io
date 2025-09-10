@@ -1,6 +1,8 @@
-fastapi
-uvicorn
+fastapi[all]
 sqlalchemy
 pandas
 reportlab
 psycopg2-binary
+passlib[bcrypt]
+python-jose[cryptography]
+pydantic[email]
