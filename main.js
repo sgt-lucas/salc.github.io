@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ATENÇÃO: PASSO CRUCIAL APÓS O DEPLOY DO BACKEND
     // Substitua a URL abaixo pela URL real da sua API fornecida pela Render.
-    const API_URL = 'https://sua-api-aqui.onrender.com';
+    const API_URL = 'https://salc.onrender.com';
 
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null; // Armazenará { username, role, ... }
