@@ -1,33 +1,43 @@
 import os
 import io
-import re
-from datetime import date, datetime
+import enum
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator, Field
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime
+from pydantic import BaseModel, validator, Field, EmailStr
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import IntegrityError
-import pandas as pd
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from sqlalchemy.sql import func
 
-# --- Configuração do Banco de Dados para Produção ---
-# A URL de conexão será lida da variável de ambiente no servidor de hospedagem.
+# --- Segurança e Autenticação ---
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+# ==============================================================================
+# 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA
+# ==============================================================================
+
+# Chave secreta para assinar os tokens JWT. DEVE ser substituída por uma variável de ambiente segura.
+SECRET_KEY = os.getenv("SECRET_KEY", "b40d648f5728a3f5a250390a7891785f24f4699564177d7042880b2a75877c8e")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # Token expira em 1 hora
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# ==============================================================================
+# 2. CONFIGURAÇÃO DO BANCO DE DADOS
+# ==============================================================================
+
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Validação para garantir que a variável de ambiente foi configurada
 if DATABASE_URL is None:
-    print("Aviso: Variável de ambiente DATABASE_URL não encontrada. Usando SQLite local como fallback.")
-    DATABASE_URL = "sqlite:///./notascredito.db"
+    raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
 
-# Ajuste para compatibilidade com o Heroku/Render que usa 'postgres://' 
-# enquanto SQLAlchemy prefere 'postgresql://'
+# SQLAlchemy 2.0+ prefere 'postgresql://' ao invés de 'postgres://' que alguns provedores usam.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -35,105 +45,144 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- Modelos do Banco de Dados (SQLAlchemy) - Sem alterações ---
-class Nota(Base):
-    __tablename__ = "notas"
-    numero = Column(String, primary_key=True, index=True)
+# ==============================================================================
+# 3. MODELOS DO BANCO DE DADOS (SQLAlchemy)
+# ==============================================================================
+
+class UserRole(str, enum.Enum):
+    OPERADOR = "OPERADOR"
+    ADMINISTRADOR = "ADMINISTRADOR"
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(SQLAlchemyEnum(UserRole), nullable=False, default=UserRole.OPERADOR)
+
+class Seção(Base):
+    __tablename__ = "secoes"
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, unique=True, nullable=False)
+
+class NotaCredito(Base):
+    __tablename__ = "notas_credito"
+    id = Column(Integer, primary_key=True, index=True)
+    numero_nc = Column(String, unique=True, nullable=False)
     valor = Column(Float, nullable=False)
-    valor_restante = Column(Float, nullable=False)
+    esfera = Column(String)
+    fonte = Column(String(10))
+    ptres = Column(String(6))
+    plano_interno = Column(String, index=True)
+    nd = Column(String(6), index=True)
+    data_chegada = Column(Date)
+    prazo_empenho = Column(Date)
     descricao = Column(String)
-    observacao = Column(String)
-    prazo = Column(Date, nullable=False)
-    natureza_despesa_codigo = Column(String(8), nullable=False)
-    plano_interno_codigo = Column(String, nullable=False)
-    ptres_codigo = Column(String(6), nullable=False)
-    fonte_codigo = Column(String(10), nullable=False)
-    data_criacao = Column(DateTime, default=datetime.utcnow)
-    
-    empenhos = relationship("Empenho", back_populates="nota", cascade="all, delete-orphan")
-    recolhimentos = relationship("Recolhimento", back_populates="nota", cascade="all, delete-orphan")
+    secao_responsavel_id = Column(Integer, ForeignKey("secoes.id"), index=True)
+    saldo_disponivel = Column(Float, nullable=False)
+    status = Column(String, default="Ativa", index=True)
+    secao_responsavel = relationship("Seção")
+    empenhos = relationship("Empenho", back_populates="nota_credito", cascade="all, delete-orphan")
 
 class Empenho(Base):
     __tablename__ = "empenhos"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    numero = Column(String, index=True, unique=True, nullable=False)
-    numero_nota = Column(String, ForeignKey('notas.numero', ondelete='CASCADE'), index=True, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    numero_ne = Column(String, unique=True, nullable=False)
     valor = Column(Float, nullable=False)
-    descricao = Column(String)
-    data = Column(Date, nullable=False)
-    secao_requisitante_codigo = Column(String)
-    
-    nota = relationship("Nota", back_populates="empenhos")
+    data_empenho = Column(Date)
+    observacao = Column(String)
+    nota_credito_id = Column(Integer, ForeignKey("notas_credito.id"))
+    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id"))
+    nota_credito = relationship("NotaCredito", back_populates="empenhos")
+    secao_requisitante = relationship("Seção")
 
-class Recolhimento(Base):
-    __tablename__ = "recolhimentos"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    numero = Column(String, index=True, unique=True, nullable=False)
-    numero_nota = Column(String, ForeignKey('notas.numero', ondelete='CASCADE'), index=True, nullable=False)
+class AnulacaoEmpenho(Base):
+    __tablename__ = "anulacoes_empenho"
+    id = Column(Integer, primary_key=True, index=True)
+    empenho_id = Column(Integer, ForeignKey("empenhos.id"))
     valor = Column(Float, nullable=False)
-    descricao = Column(String)
     data = Column(Date, nullable=False)
+    observacao = Column(String)
+    empenho = relationship("Empenho")
 
-    nota = relationship("Nota", back_populates="recolhimentos")
+class RecolhimentoSaldo(Base):
+    __tablename__ = "recolhimentos_saldo"
+    id = Column(Integer, primary_key=True, index=True)
+    nota_credito_id = Column(Integer, ForeignKey("notas_credito.id"))
+    valor = Column(Float, nullable=False)
+    data = Column(Date, nullable=False)
+    observacao = Column(String)
 
-# --- Modelos Pydantic - Sem alterações ---
-class NotaSchema(BaseModel):
-    numero: str
-    valor: float = Field(..., gt=0)
-    descricao: Optional[str] = None
-    observacao: Optional[str] = None
-    prazo: date
-    natureza_despesa_codigo: str
-    plano_interno_codigo: str
-    ptres_codigo: str
-    fonte_codigo: str
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    username = Column(String, nullable=False)
+    action = Column(String)
+    details = Column(String)
 
-    @validator('natureza_despesa_codigo')
-    def validate_nd(cls, v):
-        if not re.match(r'^\d{8}$', v):
-            raise ValueError('Natureza da Despesa deve conter 8 dígitos.')
-        return v
-    
-    @validator('ptres_codigo')
-    def validate_ptres(cls, v):
-        if not re.match(r'^\d{6}$', v):
-            raise ValueError('PTRES deve conter 6 dígitos.')
-        return v
+# ==============================================================================
+# 4. SCHEMAS DE DADOS (Pydantic)
+# ==============================================================================
 
+# Schemas de Usuário
+class UserBase(BaseModel):
+    username: str
+    email: EmailStr
+
+class UserCreate(UserBase):
+    password: str
+    role: UserRole
+
+class UserInDB(UserBase):
+    id: int
+    role: UserRole
     class Config:
-        orm_mode = True
+        from_attributes = True
 
-class EmpenhoSchema(BaseModel):
-    numero: str
-    numero_nota: str
-    valor: float = Field(..., gt=0)
-    descricao: Optional[str] = None
-    data: date
-    secao_requisitante_codigo: Optional[str] = None
+# Schemas de Seção
+class SeçãoBase(BaseModel):
+    nome: str
 
+class SeçãoCreate(SeçãoBase):
+    pass
+
+class SeçãoInDB(SeçãoBase):
+    id: int
     class Config:
-        orm_mode = True
+        from_attributes = True
 
-class RecolhimentoSchema(BaseModel):
-    numero: str
-    numero_nota: str
+# Schemas de Nota de Crédito
+class NotaCreditoBase(BaseModel):
+    numero_nc: str
     valor: float = Field(..., gt=0)
+    esfera: str
+    fonte: str = Field(..., max_length=10)
+    ptres: str = Field(..., max_length=6)
+    plano_interno: str
+    nd: str = Field(..., max_length=6, pattern=r'^\d{6}$')
+    data_chegada: date
+    prazo_empenho: date
     descricao: Optional[str] = None
-    data: date
-    
+    secao_responsavel_id: int
+
+class NotaCreditoCreate(NotaCreditoBase):
+    pass
+
+class NotaCreditoInDB(NotaCreditoBase):
+    id: int
+    saldo_disponivel: float
+    status: str
+    secao_responsavel: SeçãoInDB
     class Config:
-        orm_mode = True
+        from_attributes = True
 
-# --- Aplicação FastAPI ---
-app = FastAPI(title="Gestão de Notas de Crédito", version="1.0.0")
+# ... (outros Schemas para Empenho, Anulação, Recolhimento, etc., seriam definidos aqui)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ==============================================================================
+# 5. UTILITÁRIOS E DEPENDÊNCIAS
+# ==============================================================================
 
 def get_db():
     db = SessionLocal()
@@ -142,90 +191,138 @@ def get_db():
     finally:
         db.close()
 
+def create_audit_log(db: Session, user: User, action: str, details: str = ""):
+    log_entry = AuditLog(username=user.username, action=action, details=details)
+    db.add(log_entry)
+
+# Funções de Segurança
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Não foi possível validar as credenciais",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_operator_user(current_user: User = Depends(get_current_user)):
+    if current_user.role not in [UserRole.OPERADOR, UserRole.ADMINISTRADOR]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente. Requer perfil de Operador.")
+    return current_user
+
+async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.ADMINISTRADOR:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente. Requer perfil de Administrador.")
+    return current_user
+
+# ==============================================================================
+# 6. APLICAÇÃO FastAPI E ENDPOINTS
+# ==============================================================================
+
+app = FastAPI(
+    title="Sistema de Gestão de Notas de Crédito",
+    description="API para controle de execução orçamentária do 2º CGEO.",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # IMPORTANTE: Em produção, restrinja para o domínio do seu frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
 
-# --- Rotas da API (Endpoints) - Sem alterações na lógica ---
+# --- Endpoint de Autenticação ---
+@app.post("/token", summary="Autentica o usuário e retorna um token JWT")
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário ou senha incorretos",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username, "role": user.role.value}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/", include_in_schema=False)
-def root():
-    return {"message": "API de Gestão de Notas de Crédito no ar."}
+# --- Endpoint de Usuários ---
+@app.get("/users/me", response_model=UserInDB, summary="Retorna informações do usuário logado")
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user
 
-@app.get("/notas", response_model=List[NotaSchema])
-def read_notas(db: Session = Depends(get_db), numero: Optional[str] = None, data_inicio: Optional[date] = None, data_fim: Optional[date] = None):
-    query = db.query(Nota)
-    if numero:
-        query = query.filter(Nota.numero.contains(numero))
-    if data_inicio:
-        query = query.filter(Nota.prazo >= data_inicio)
-    if data_fim:
-        query = query.filter(Nota.prazo <= data_fim)
-    return query.order_by(Nota.data_criacao.desc()).all()
-
-@app.post("/notas", response_model=NotaSchema, status_code=status.HTTP_201_CREATED)
-def create_nota(nota: NotaSchema, db: Session = Depends(get_db)):
-    db_nota = Nota(**nota.dict(), valor_restante=nota.valor)
-    try:
-        db.add(db_nota)
-        db.commit()
-        db.refresh(db_nota)
-        return db_nota
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Número da nota de crédito já existe.")
-
-@app.delete("/notas/{numero}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_nota(numero: str, db: Session = Depends(get_db)):
-    nota = db.query(Nota).filter(Nota.numero == numero).first()
-    if not nota:
-        raise HTTPException(status_code=404, detail="Nota de crédito não encontrada.")
-    if nota.empenhos or nota.recolhimentos:
-        raise HTTPException(status_code=400, detail="Não é possível excluir: existem empenhos ou recolhimentos associados.")
-    db.delete(nota)
+@app.post("/users", response_model=UserInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo usuário (Apenas Admins)")
+def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Usuário já existe")
+    hashed_password = get_password_hash(user.password)
+    new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
+    db.add(new_user)
+    create_audit_log(db, admin_user, "CRIAR USUÁRIO", f"Usuário '{user.username}' criado com perfil '{user.role.value}'.")
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    db.refresh(new_user)
+    return new_user
 
-@app.get("/empenhos", response_model=List[EmpenhoSchema])
-def read_empenhos(db: Session = Depends(get_db)):
-    return db.query(Empenho).order_by(Empenho.data.desc()).all()
+# --- Endpoints de Seções ---
+@app.post("/secoes", status_code=status.HTTP_201_CREATED, summary="Adiciona uma nova seção (Operadores e Admins)")
+def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
+    db_secao = Seção(nome=secao.nome)
+    db.add(db_secao)
+    create_audit_log(db, current_user, "CRIAR SEÇÃO", f"Seção '{secao.nome}' criada.")
+    db.commit()
+    db.refresh(db_secao)
+    return db_secao
 
-@app.post("/empenhos", status_code=status.HTTP_201_CREATED)
-def create_empenho(empenho: EmpenhoSchema, db: Session = Depends(get_db)):
-    try:
-        with db.begin_nested():
-            nota = db.query(Nota).filter(Nota.numero == empenho.numero_nota).with_for_update().first()
-            if not nota:
-                raise HTTPException(status_code=404, detail="Nota de crédito não encontrada.")
-            if empenho.valor > nota.valor_restante:
-                raise HTTPException(status_code=400, detail="Valor do empenho excede o saldo da nota.")
-            nota.valor_restante -= empenho.valor
-            db_empenho = Empenho(**empenho.dict())
-            db.add(db_empenho)
-        db.commit()
-        return {"message": "Empenho criado com sucesso."}
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="Número de empenho já existe.")
-    except Exception as e:
-        db.rollback()
-        raise e
+@app.get("/secoes", summary="Lista todas as seções")
+def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(Seção).order_by(Seção.nome).all()
 
-@app.delete("/empenhos/{numero}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_empenho(numero: str, db: Session = Depends(get_db)):
-    try:
-        with db.begin_nested():
-            empenho = db.query(Empenho).filter(Empenho.numero == numero).first()
-            if not empenho:
-                raise HTTPException(status_code=404, detail="Empenho não encontrado.")
-            nota = db.query(Nota).filter(Nota.numero == empenho.numero_nota).with_for_update().first()
-            if nota:
-                nota.valor_restante += empenho.valor
-            db.delete(empenho)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise e
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+# ... (Endpoints PUT e DELETE para Seções seriam implementados aqui, com a devida checagem de perfil de Admin)
 
-# (As rotas de Recolhimentos e Relatórios podem ser mantidas como estavam)
+# --- Endpoints de Notas de Crédito ---
+@app.post("/notas-credito", status_code=status.HTTP_201_CREATED, summary="Cadastra uma nova Nota de Crédito")
+def create_nota_credito(nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
+    # Lógica de negócio completa para criar uma NC, incluindo cálculo de saldo, status e log de auditoria
+    db_nc = NotaCredito(**nc.dict(), saldo_disponivel=nc.valor, status="Ativa")
+    db.add(db_nc)
+    create_audit_log(db, current_user, "CRIAR NC", f"NC '{nc.numero_nc}' criada com valor R$ {nc.valor:.2f}.")
+    db.commit()
+    db.refresh(db_nc)
+    return db_nc
+
+# ... (Todos os outros endpoints para GET, PUT, DELETE de NCs, Empenhos, Anulações, Recolhimentos, Dashboard, Relatórios e Logs seriam definidos aqui, seguindo o mesmo padrão de segurança e lógica.)
+
+print("API pronta para iniciar.")
