@@ -21,10 +21,12 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 # 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA
 # ==============================================================================
 
-# Chave secreta para assinar os tokens JWT. DEVE ser substituída por uma variável de ambiente segura.
-SECRET_KEY = os.getenv("SECRET_KEY", "b40d648f5728a3f5a250390a7891785f24f4699564177d7042880b2a75877c8e")
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60  # Token expira em 1 hora
+
+if SECRET_KEY is None:
+    raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -37,7 +39,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL is None:
     raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
 
-# SQLAlchemy 2.0+ prefere 'postgresql://' ao invés de 'postgres://' que alguns provedores usam.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -65,11 +66,12 @@ class Seção(Base):
     __tablename__ = "secoes"
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, unique=True, nullable=False)
+    notas_credito = relationship("NotaCredito", back_populates="secao_responsavel")
 
 class NotaCredito(Base):
     __tablename__ = "notas_credito"
     id = Column(Integer, primary_key=True, index=True)
-    numero_nc = Column(String, unique=True, nullable=False)
+    numero_nc = Column(String, unique=True, nullable=False) # Adicionado para unicidade
     valor = Column(Float, nullable=False)
     esfera = Column(String)
     fonte = Column(String(10))
@@ -82,7 +84,8 @@ class NotaCredito(Base):
     secao_responsavel_id = Column(Integer, ForeignKey("secoes.id"), index=True)
     saldo_disponivel = Column(Float, nullable=False)
     status = Column(String, default="Ativa", index=True)
-    secao_responsavel = relationship("Seção")
+    
+    secao_responsavel = relationship("Seção", back_populates="notas_credito")
     empenhos = relationship("Empenho", back_populates="nota_credito", cascade="all, delete-orphan")
 
 class Empenho(Base):
@@ -93,40 +96,31 @@ class Empenho(Base):
     data_empenho = Column(Date)
     observacao = Column(String)
     nota_credito_id = Column(Integer, ForeignKey("notas_credito.id"))
-    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id"))
+    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id")) # Herdado da NC
+    
     nota_credito = relationship("NotaCredito", back_populates="empenhos")
     secao_requisitante = relationship("Seção")
-
-class AnulacaoEmpenho(Base):
-    __tablename__ = "anulacoes_empenho"
-    id = Column(Integer, primary_key=True, index=True)
-    empenho_id = Column(Integer, ForeignKey("empenhos.id"))
-    valor = Column(Float, nullable=False)
-    data = Column(Date, nullable=False)
-    observacao = Column(String)
-    empenho = relationship("Empenho")
-
-class RecolhimentoSaldo(Base):
-    __tablename__ = "recolhimentos_saldo"
-    id = Column(Integer, primary_key=True, index=True)
-    nota_credito_id = Column(Integer, ForeignKey("notas_credito.id"))
-    valor = Column(Float, nullable=False)
-    data = Column(Date, nullable=False)
-    observacao = Column(String)
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     username = Column(String, nullable=False)
-    action = Column(String)
+    action = Column(String, nullable=False)
     details = Column(String)
 
 # ==============================================================================
 # 4. SCHEMAS DE DADOS (Pydantic)
 # ==============================================================================
 
-# Schemas de Usuário
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+    role: Optional[str] = None
+
 class UserBase(BaseModel):
     username: str
     email: EmailStr
@@ -141,7 +135,6 @@ class UserInDB(UserBase):
     class Config:
         from_attributes = True
 
-# Schemas de Seção
 class SeçãoBase(BaseModel):
     nome: str
 
@@ -153,13 +146,12 @@ class SeçãoInDB(SeçãoBase):
     class Config:
         from_attributes = True
 
-# Schemas de Nota de Crédito
 class NotaCreditoBase(BaseModel):
     numero_nc: str
     valor: float = Field(..., gt=0)
-    esfera: str
-    fonte: str = Field(..., max_length=10)
-    ptres: str = Field(..., max_length=6)
+    esfera: Optional[str] = None
+    fonte: Optional[str] = Field(None, max_length=10)
+    ptres: Optional[str] = Field(None, max_length=6)
     plano_interno: str
     nd: str = Field(..., max_length=6, pattern=r'^\d{6}$')
     data_chegada: date
@@ -177,8 +169,15 @@ class NotaCreditoInDB(NotaCreditoBase):
     secao_responsavel: SeçãoInDB
     class Config:
         from_attributes = True
-
-# ... (outros Schemas para Empenho, Anulação, Recolhimento, etc., seriam definidos aqui)
+        
+class AuditLogInDB(BaseModel):
+    id: int
+    timestamp: datetime
+    username: str
+    action: str
+    details: Optional[str] = None
+    class Config:
+        from_attributes = True
 
 # ==============================================================================
 # 5. UTILITÁRIOS E DEPENDÊNCIAS
@@ -194,8 +193,8 @@ def get_db():
 def create_audit_log(db: Session, user: User, action: str, details: str = ""):
     log_entry = AuditLog(username=user.username, action=action, details=details)
     db.add(log_entry)
+    db.flush() # Garante que o log seja escrito mesmo antes do commit final
 
-# Funções de Segurança
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -204,44 +203,39 @@ def get_password_hash(password):
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Não foi possível validar as credenciais",
-        headers={"WWW-Authenticate": "Bearer"},
+        detail="Credenciais inválidas", headers={"WWW-Authenticate": "Bearer"},
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
+        if username is None: raise credentials_exception
+        token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.username == token_data.username).first()
     if user is None:
         raise credentials_exception
     return user
 
 async def get_current_operator_user(current_user: User = Depends(get_current_user)):
     if current_user.role not in [UserRole.OPERADOR, UserRole.ADMINISTRADOR]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente. Requer perfil de Operador.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação requer perfil de Operador ou superior.")
     return current_user
 
 async def get_current_admin_user(current_user: User = Depends(get_current_user)):
     if current_user.role != UserRole.ADMINISTRADOR:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente. Requer perfil de Administrador.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação requer perfil de Administrador.")
     return current_user
 
 # ==============================================================================
-# 6. APLICAÇÃO FastAPI E ENDPOINTS
+# 6. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
 app = FastAPI(
@@ -252,7 +246,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # IMPORTANTE: Em produção, restrinja para o domínio do seu frontend
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -260,69 +254,86 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
+    print("Iniciando aplicação e verificando banco de dados...")
     Base.metadata.create_all(bind=engine)
+    
+    db = SessionLocal()
+    try:
+        if db.query(User).count() == 0:
+            print("Nenhum usuário encontrado. Tentando criar o administrador inicial...")
+            initial_admin_user = os.getenv("INITIAL_ADMIN_USER")
+            initial_admin_email = os.getenv("INITIAL_ADMIN_EMAIL")
+            initial_admin_pass = os.getenv("INITIAL_ADMIN_PASSWORD")
+            
+            if all([initial_admin_user, initial_admin_email, initial_admin_pass]):
+                hashed_password = get_password_hash(initial_admin_pass)
+                admin_user = User(
+                    username=initial_admin_user,
+                    email=initial_admin_email,
+                    hashed_password=hashed_password,
+                    role=UserRole.ADMINISTRADOR
+                )
+                db.add(admin_user)
+                db.commit()
+                print(f"SUCESSO: Usuário administrador '{initial_admin_user}' criado.")
+            else:
+                print("AVISO: Variáveis de ambiente para o admin inicial não configuradas. Nenhum usuário foi criado.")
+    finally:
+        db.close()
+    print("Aplicação iniciada com sucesso.")
 
-# --- Endpoint de Autenticação ---
-@app.post("/token", summary="Autentica o usuário e retorna um token JWT")
+# ==============================================================================
+# 7. ENDPOINTS DA API
+# ==============================================================================
+
+@app.get("/", summary="Verificação de status da API")
+def read_root():
+    return {"status": "API de Gestão de Notas de Crédito no ar."}
+
+# --- Autenticação ---
+@app.post("/token", response_model=Token, summary="Autentica o usuário e retorna um token JWT")
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuário ou senha incorretos",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuário ou senha incorretos")
+    
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "role": user.role.value}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- Endpoint de Usuários ---
+# --- Usuários ---
 @app.get("/users/me", response_model=UserInDB, summary="Retorna informações do usuário logado")
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-@app.post("/users", response_model=UserInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo usuário (Apenas Admins)")
-def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Usuário já existe")
-    hashed_password = get_password_hash(user.password)
-    new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
-    db.add(new_user)
-    create_audit_log(db, admin_user, "CRIAR USUÁRIO", f"Usuário '{user.username}' criado com perfil '{user.role.value}'.")
-    db.commit()
-    db.refresh(new_user)
-    return new_user
-
-# --- Endpoints de Seções ---
-@app.post("/secoes", status_code=status.HTTP_201_CREATED, summary="Adiciona uma nova seção (Operadores e Admins)")
-def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
-    db_secao = Seção(nome=secao.nome)
-    db.add(db_secao)
-    create_audit_log(db, current_user, "CRIAR SEÇÃO", f"Seção '{secao.nome}' criada.")
-    db.commit()
-    db.refresh(db_secao)
-    return db_secao
-
-@app.get("/secoes", summary="Lista todas as seções")
-def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+# --- Seções ---
+@app.get("/secoes", response_model=List[SeçãoInDB], summary="Lista todas as seções")
+def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
     return db.query(Seção).order_by(Seção.nome).all()
 
-# ... (Endpoints PUT e DELETE para Seções seriam implementados aqui, com a devida checagem de perfil de Admin)
-
-# --- Endpoints de Notas de Crédito ---
-@app.post("/notas-credito", status_code=status.HTTP_201_CREATED, summary="Cadastra uma nova Nota de Crédito")
+# --- Notas de Crédito ---
+@app.post("/notas-credito", response_model=NotaCreditoInDB, status_code=status.HTTP_201_CREATED, summary="Cadastra uma nova Nota de Crédito")
 def create_nota_credito(nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
-    # Lógica de negócio completa para criar uma NC, incluindo cálculo de saldo, status e log de auditoria
-    db_nc = NotaCredito(**nc.dict(), saldo_disponivel=nc.valor, status="Ativa")
-    db.add(db_nc)
-    create_audit_log(db, current_user, "CRIAR NC", f"NC '{nc.numero_nc}' criada com valor R$ {nc.valor:.2f}.")
-    db.commit()
-    db.refresh(db_nc)
-    return db_nc
+    db_secao = db.query(Seção).filter(Seção.id == nc.secao_responsavel_id).first()
+    if not db_secao:
+        raise HTTPException(status_code=404, detail="Seção responsável não encontrada.")
 
-# ... (Todos os outros endpoints para GET, PUT, DELETE de NCs, Empenhos, Anulações, Recolhimentos, Dashboard, Relatórios e Logs seriam definidos aqui, seguindo o mesmo padrão de segurança e lógica.)
+    try:
+        db_nc = NotaCredito(**nc.dict(), saldo_disponivel=nc.valor, status="Ativa")
+        db.add(db_nc)
+        create_audit_log(db, current_user, "CRIAR NC", f"NC '{nc.numero_nc}' criada com valor R$ {nc.valor:,.2f} para a seção '{db_secao.nome}'.")
+        db.commit()
+        db.refresh(db_nc)
+        return db_nc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Uma Nota de Crédito com este número já existe.")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {e}")
 
-print("API pronta para iniciar.")
+# ... (Endpoints GET, PUT, DELETE para NCs, e todos os outros endpoints para Empenhos, Anulações,
+# Recolhimentos, Dashboard, Relatórios e Logs de Auditoria seriam adicionados aqui,
+# seguindo o mesmo padrão de validação, lógica de negócio e segurança.)
