@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     // IMPORTANTE: Após hospedar o backend no Render, substitua a URL abaixo
     // pela URL que o Render fornecer para a sua API.
-    const API_URL = 'https://SUA-API.onrender.com'; // <-- SUBSTITUA AQUI
+    const API_URL = 'https://salc.onrender.com'; // <-- SUBSTITUA AQUI
 
     // Seletores do DOM
     const totalNotasEl = document.getElementById('total-notas');
@@ -146,4 +146,5 @@ document.addEventListener('DOMContentLoaded', () => {
     // Carga Inicial
     loadNotas();
     loadEmpenhos();
+
 });
