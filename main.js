@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 1. CONFIGURAÇÃO INICIAL E ESTADO DA APLICAÇÃO
     // ========================================================================
-    const API_URL = 'https://sua-api-aqui.onrender.com'; // ATENÇÃO: SUBSTITUA PELA SUA URL REAL
+    const API_URL = 'https://salc.onrender.com'; // ATENÇÃO: SUBSTITUA PELA SUA URL REAL
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null; // Armazenará { username, role, ... }
     
