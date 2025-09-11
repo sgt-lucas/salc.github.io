@@ -2,7 +2,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 1. CONFIGURAÇÃO INICIAL E ESTADO DA APLICAÇÃO
     // ========================================================================
-    const API_URL = 'https://salc.onrender.com'; // ATENÇÃO: SUBSTITUA PELA SUA URL REAL
+
+    // ATENÇÃO: PASSO CRUCIAL APÓS O DEPLOY DO BACKEND
+    // Substitua a URL abaixo pela URL real da sua API fornecida pela Render.
+    const API_URL = 'https://salc.onrender.com';
+
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null; // Armazenará { username, role, ... }
     
@@ -26,6 +30,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 2. INICIALIZAÇÃO E AUTENTICAÇÃO
     // ========================================================================
+
+    /**
+     * Função principal que inicia a aplicação. Verifica o token, busca os dados
+     * do usuário e renderiza o layout inicial.
+     */
     async function initApp() {
         if (!accessToken) {
             window.location.href = 'login.html';
@@ -41,6 +50,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    /**
+     * Limpa o token de acesso e redireciona para a página de login.
+     */
     function logout() {
         localStorage.removeItem('accessToken');
         window.location.href = 'login.html';
@@ -49,18 +61,46 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 3. FUNÇÃO AUXILIAR PARA REQUISIÇÕES À API
     // ========================================================================
+
+    /**
+     * Wrapper para a função fetch que adiciona automaticamente o header de
+     * autorização e trata erros comuns como token expirado.
+     * @param {string} endpoint - O endpoint da API a ser chamado (ex: '/users/me').
+     * @param {object} options - Opções padrão da função fetch (method, body, etc.).
+     * @returns {Promise<any>} - A resposta JSON da API.
+     */
     async function fetchWithAuth(endpoint, options = {}) {
-        const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}`, ...options.headers };
+        const headers = {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+            ...options.headers,
+        };
+
         const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
 
-        if (response.status === 401) { logout(); throw new Error('Sessão expirada. Por favor, faça login novamente.'); }
-        if (!response.ok) { const d = await response.json(); throw new Error(d.detail || 'Erro na requisição.'); }
+        if (response.status === 401) { // Token expirado ou inválido
+            logout();
+            throw new Error('Sessão expirada. Por favor, faça login novamente.');
+        }
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
+        }
+        
+        if (options.responseType === 'blob') {
+            return response.blob();
+        }
         return response.status === 204 ? null : response.json();
     }
 
     // ========================================================================
     // 4. RENDERIZAÇÃO DO LAYOUT E NAVEGAÇÃO
     // ========================================================================
+
+    /**
+     * Renderiza os componentes estáticos do layout, como o cabeçalho e as abas de navegação.
+     */
     function renderLayout() {
         usernameDisplay.textContent = `Usuário: ${currentUser.username} (${currentUser.role})`;
         logoutBtn.addEventListener('click', logout);
@@ -329,6 +369,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ndSelect.innerHTML = '<option value="">Todas</option>' + naturezasDespesa.sort().map(nd => `<option value="${nd}">${nd}</option>`).join('');
         } catch(error) {
             console.error("Erro ao popular filtros:", error);
+            // Poderia adicionar uma mensagem de erro na UI aqui
         }
     }
 
@@ -356,7 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             tableBody.innerHTML = notas.map(nc => `
-                <tr>
+                <tr data-id="${nc.id}">
                     <td>${nc.numero_nc}</td>
                     <td>${nc.plano_interno}</td>
                     <td>${nc.nd}</td>
@@ -366,10 +407,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${new Date(nc.prazo_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                     <td><span class="status status-${nc.status.toLowerCase().replace(/ /g, '-')}">${nc.status}</span></td>
                     <td class="actions">
-                        <button class="btn-icon" data-action="extrato-nc" data-id="${nc.id}" title="Ver Extrato"><i class="fas fa-file-alt"></i></button>
-                        <button class="btn-icon" data-action="edit-nc" data-id="${nc.id}" title="Editar NC"><i class="fas fa-edit"></i></button>
+                        <button class="btn-icon" data-action="extrato-nc" title="Ver Extrato"><i class="fas fa-file-alt"></i></button>
+                        <button class="btn-icon" data-action="edit-nc" title="Editar NC"><i class="fas fa-edit"></i></button>
                         ${currentUser.role === 'ADMINISTRADOR' ? 
-                            `<button class="btn-icon btn-delete" data-action="delete-nc" data-id="${nc.id}" data-numero="${nc.numero_nc}" title="Excluir NC"><i class="fas fa-trash"></i></button>` : ''}
+                            `<button class="btn-icon btn-delete" data-action="delete-nc" data-numero="${nc.numero_nc}" title="Excluir NC"><i class="fas fa-trash"></i></button>` : ''}
                     </td>
                 </tr>
             `).join('');
@@ -495,12 +536,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getCurrentFilters() {
-        return {
-            plano_interno: document.getElementById('filter-pi')?.value,
-            nd: document.getElementById('filter-nd')?.value,
-            secao_responsavel_id: document.getElementById('filter-secao')?.value,
-            status: document.getElementById('filter-status')?.value,
-        };
+        const view = document.querySelector('.tab-btn.active').dataset.view;
+        if (view === 'notasCredito') {
+            return {
+                plano_interno: document.getElementById('filter-pi')?.value,
+                nd: document.getElementById('filter-nd')?.value,
+                secao_responsavel_id: document.getElementById('filter-secao')?.value,
+                status: document.getElementById('filter-status')?.value,
+            };
+        }
+        return {};
     }
     
     // ========================================================================
@@ -607,7 +652,7 @@ document.addEventListener('DOMContentLoaded', () => {
             renderAdminSeçõesView(container);
         } else if (subView === 'logs'){
             // A view de Logs virá na próxima e última parte
-            container.innerHTML = `<h3>Logs de Auditoria (Conteúdo virá na Parte 6)</h3>`;
+            renderAdminLogsView(container);
         }
     }
 
@@ -645,12 +690,12 @@ document.addEventListener('DOMContentLoaded', () => {
             appState.secoes = secoes;
             tableBody.innerHTML = secoes.length === 0 ? '<tr><td colspan="3">Nenhuma seção cadastrada.</td></tr>' :
                 secoes.map(s => `
-                    <tr>
+                    <tr data-id="${s.id}">
                         <td>${s.id}</td>
                         <td>${s.nome}</td>
                         <td class="actions">
-                            <button class="btn-icon" data-action="edit-secao" data-id="${s.id}" data-nome="${s.nome}" title="Editar"><i class="fas fa-edit"></i></button>
-                            <button class="btn-icon btn-delete" data-action="delete-secao" data-id="${s.id}" data-nome="${s.nome}" title="Excluir"><i class="fas fa-trash"></i></button>
+                            <button class="btn-icon" data-action="edit-secao" data-nome="${s.nome}" title="Editar"><i class="fas fa-edit"></i></button>
+                            <button class="btn-icon btn-delete" data-action="delete-secao" data-nome="${s.nome}" title="Excluir"><i class="fas fa-trash"></i></button>
                         </td>
                     </tr>
                 `).join('');
@@ -720,14 +765,14 @@ document.addEventListener('DOMContentLoaded', () => {
             appState.users = users;
             tableBody.innerHTML = users.length === 0 ? '<tr><td colspan="5">Nenhum usuário cadastrado.</td></tr>' :
                 users.map(u => `
-                    <tr>
+                    <tr data-id="${u.id}">
                         <td>${u.id}</td>
                         <td>${u.username}</td>
                         <td>${u.email}</td>
                         <td>${u.role}</td>
                         <td class="actions">
                             ${u.id === currentUser.id ? '<span>(Você)</span>' : 
-                            `<button class="btn-icon btn-delete" data-action="delete-user" data-id="${u.id}" data-username="${u.username}" title="Excluir"><i class="fas fa-trash"></i></button>`}
+                            `<button class="btn-icon btn-delete" data-action="delete-user" data-username="${u.username}" title="Excluir"><i class="fas fa-trash"></i></button>`}
                         </td>
                     </tr>
                 `).join('');
@@ -752,7 +797,7 @@ document.addEventListener('DOMContentLoaded', () => {
             alert(`Erro ao criar usuário: ${error.message}`);
         }
     }
-
+    
     /**
      * ATUALIZAÇÃO da função navigateTo para incluir a view de Admin.
      */
@@ -770,7 +815,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 appMain.innerHTML = `<h1>Página de Empenhos em construção</h1>`;
                 break;
             case 'admin':
-                renderAdminView(appMain);
+                renderAdminView(appMain); // A view admin agora tem suas próprias sub-abas
                 break;
             default:
                 appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
@@ -793,23 +838,54 @@ document.addEventListener('DOMContentLoaded', () => {
                 </table>
             </div>
             <div class="pagination">
-                </div>
+                <button id="prev-page-btn" class="btn">Anterior</button>
+                <span id="page-info">Página 1</span>
+                <button id="next-page-btn" class="btn">Próxima</button>
+            </div>
         `;
-        await loadAndRenderAuditLogsTable();
+
+        let currentPage = 0;
+        const pageSize = 50; // Quantos logs por página
+
+        const loadPage = (page) => {
+            loadAndRenderAuditLogsTable(page, pageSize);
+        };
+
+        document.getElementById('prev-page-btn').addEventListener('click', () => {
+            if (currentPage > 0) {
+                currentPage--;
+                loadPage(currentPage);
+            }
+        });
+
+        document.getElementById('next-page-btn').addEventListener('click', () => {
+            currentPage++;
+            loadPage(currentPage);
+        });
+
+        loadPage(currentPage); // Carrega a primeira página
     }
 
     /**
-     * Carrega e renderiza a tabela de logs de auditoria.
+     * Carrega e renderiza a tabela de logs de auditoria com paginação.
      */
-    async function loadAndRenderAuditLogsTable() {
+    async function loadAndRenderAuditLogsTable(page = 0, limit = 50) {
         const tableBody = document.querySelector('#logs-table tbody');
+        const pageInfo = document.getElementById('page-info');
+        const prevBtn = document.getElementById('prev-page-btn');
+        const nextBtn = document.getElementById('next-page-btn');
+
         tableBody.innerHTML = '<tr><td colspan="4">Carregando logs...</td></tr>';
+        pageInfo.textContent = `Página ${page + 1}`;
+        prevBtn.disabled = page === 0;
 
         try {
-            // Por padrão, busca os 100 logs mais recentes.
-            const logs = await fetchWithAuth(`/audit-logs?limit=100`);
+            const skip = page * limit;
+            const logs = await fetchWithAuth(`/audit-logs?skip=${skip}&limit=${limit}`);
             
-            if (logs.length === 0) {
+            nextBtn.disabled = logs.length < limit;
+
+            if (logs.length === 0 && page === 0) {
                 tableBody.innerHTML = '<tr><td colspan="4">Nenhum log de auditoria encontrado.</td></tr>';
                 return;
             }
@@ -829,37 +905,58 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     /**
-     * ATUALIZAÇÃO FINAL da função de navegação para incluir todas as views.
+     * ATUALIZAÇÃO FINAL do manipulador de eventos para incluir as ações de administração.
      */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        
-        const mainAdminView = view.startsWith('admin') ? 'admin' : view;
+    appMain.addEventListener('click', async (e) => {
+        const target = e.target.closest('button');
+        if (!target) return;
 
-        switch (mainAdminView) {
-            case 'dashboard':
-                renderDashboardView(appMain);
-                break;
-            case 'notasCredito':
-                renderNotasCreditoView(appMain);
-                break;
-            case 'empenhos':
-                renderEmpenhosView(appMain);
-                break;
-            case 'admin':
-                const subView = view.split('-')[1] || 'secoes'; // Padrão para 'secoes'
-                renderAdminView(appMain, subView);
-                break;
-            default:
-                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
+        const action = target.dataset.action;
+        const id = target.dataset.id;
+
+        // Ações da View de Notas de Crédito
+        if (target.id === 'add-nc-btn') { /* ... */ }
+        if (action === 'edit-nc') { /* ... */ }
+        if (action === 'delete-nc') { /* ... */ }
+
+        // Ações da View de Administração - Seções
+        if (action === 'edit-secao') {
+            const nome = target.dataset.nome;
+            const form = document.getElementById('secao-form');
+            form.id.value = id;
+            form.nome.value = nome;
+            form.querySelector('button[type="submit"]').textContent = 'Salvar Alterações';
         }
-    }
-    
+        if (action === 'delete-secao') {
+            const nome = target.dataset.nome;
+            if (confirm(`Tem certeza que deseja excluir a seção "${nome}"?`)) {
+                try {
+                    await fetchWithAuth(`/secoes/${id}`, { method: 'DELETE' });
+                    await loadAndRenderSeçõesTable();
+                } catch (error) {
+                    alert(`Erro ao excluir seção: ${error.message}`);
+                }
+            }
+        }
+
+        // Ações da View de Administração - Usuários
+        if (action === 'delete-user') {
+            const username = target.dataset.username;
+            if (confirm(`Tem certeza que deseja excluir o usuário "${username}"?`)) {
+                try {
+                    await fetchWithAuth(`/users/${id}`, { method: 'DELETE' }); // Supondo que este endpoint exista
+                    await loadAndRenderUsersTable();
+                } catch (error) {
+                    alert(`Erro ao excluir usuário: ${error.message}`);
+                }
+            }
+        }
+    });
+
     // ========================================================================
     // 9. INICIALIZAÇÃO DA APLICAÇÃO
     // ========================================================================
     
-    // Inicia todo o processo de verificação e renderização.
     initApp();
 });
 
