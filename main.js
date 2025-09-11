@@ -2,11 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 1. CONFIGURAÇÃO INICIAL E ESTADO DA APLICAÇÃO
     // ========================================================================
-
-    // ATENÇÃO: PASSO CRUCIAL APÓS O DEPLOY DO BACKEND
-    // Substitua a URL abaixo pela URL real da sua API fornecida pela Render.
-    const API_URL = 'https://salc.onrender.com';
-
+    const API_URL = 'https://sua-api-aqui.onrender.com'; // ATENÇÃO: SUBSTITUA PELA SUA URL REAL
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null; // Armazenará { username, role, ... }
     
@@ -15,6 +11,8 @@ document.addEventListener('DOMContentLoaded', () => {
         secoes: [],
         notasCredito: [],
         empenhos: [],
+        users: [],
+        auditLogs: [],
     };
 
     // Referências aos elementos principais do DOM
@@ -23,21 +21,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const usernameDisplay = document.getElementById('username-display');
     const logoutBtn = document.getElementById('logout-btn');
     const modalContainer = document.getElementById('modal-container');
+    const modalTemplate = document.getElementById('modal-template');
 
     // ========================================================================
     // 2. INICIALIZAÇÃO E AUTENTICAÇÃO
     // ========================================================================
-
-    /**
-     * Função principal que inicia a aplicação. Verifica o token, busca os dados
-     * do usuário e renderiza o layout inicial.
-     */
     async function initApp() {
         if (!accessToken) {
             window.location.href = 'login.html';
             return;
         }
-
         try {
             currentUser = await fetchWithAuth('/users/me');
             renderLayout();
@@ -48,9 +41,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Limpa o token de acesso e redireciona para a página de login.
-     */
     function logout() {
         localStorage.removeItem('accessToken');
         window.location.href = 'login.html';
@@ -59,43 +49,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // ========================================================================
     // 3. FUNÇÃO AUXILIAR PARA REQUISIÇÕES À API
     // ========================================================================
-
-    /**
-     * Wrapper para a função fetch que adiciona automaticamente o header de
-     * autorização e trata erros comuns como token expirado.
-     * @param {string} endpoint - O endpoint da API a ser chamado (ex: '/users/me').
-     * @param {object} options - Opções padrão da função fetch (method, body, etc.).
-     * @returns {Promise<any>} - A resposta JSON da API.
-     */
     async function fetchWithAuth(endpoint, options = {}) {
-        const headers = {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`,
-            ...options.headers,
-        };
-
+        const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}`, ...options.headers };
         const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
 
-        if (response.status === 401) { // Token expirado ou inválido
-            logout();
-            throw new Error('Sessão expirada. Por favor, faça login novamente.');
-        }
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
-        }
-        
+        if (response.status === 401) { logout(); throw new Error('Sessão expirada. Por favor, faça login novamente.'); }
+        if (!response.ok) { const d = await response.json(); throw new Error(d.detail || 'Erro na requisição.'); }
         return response.status === 204 ? null : response.json();
     }
 
     // ========================================================================
     // 4. RENDERIZAÇÃO DO LAYOUT E NAVEGAÇÃO
     // ========================================================================
-
-    /**
-     * Renderiza os componentes estáticos do layout, como o cabeçalho e as abas de navegação.
-     */
     function renderLayout() {
         usernameDisplay.textContent = `Usuário: ${currentUser.username} (${currentUser.role})`;
         logoutBtn.addEventListener('click', logout);
@@ -105,15 +70,11 @@ document.addEventListener('DOMContentLoaded', () => {
             <button class="tab-btn" data-view="notasCredito">Notas de Crédito</button>
             <button class="tab-btn" data-view="empenhos">Empenhos</button>
         `;
-
-        // Adiciona a aba de Administração apenas para o perfil Administrador
         if (currentUser.role === 'ADMINISTRADOR') {
             navHTML += `<button class="tab-btn" data-view="admin">Administração</button>`;
         }
-        
         appNav.innerHTML = navHTML;
 
-        // Adiciona um único event listener para a navegação
         appNav.addEventListener('click', (e) => {
             if (e.target.matches('.tab-btn')) {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -121,23 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 navigateTo(e.target.dataset.view);
             }
         });
-    }
-
-    /**
-     * Roteador simples para carregar a view correta no container principal.
-     * @param {string} view - O nome da view a ser carregada.
-     */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        switch (view) {
-            case 'dashboard':
-                // A função para renderizar o dashboard virá na Parte 2
-                renderDashboardView(appMain); 
-                break;
-            // Outras views serão adicionadas nas próximas partes
-            default:
-                appMain.innerHTML = `<h1>Página em construção</h1>`;
-        }
     }
 
 // FIM DA PARTE 1 DE 6
@@ -160,7 +104,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ]);
 
             const avisosHTML = avisos.length > 0 ? avisos.map(nc => {
-                const prazo = new Date(nc.prazo_empenho + 'T00:00:00'); // Adiciona T00:00:00 para evitar problemas de fuso horário
+                const prazo = new Date(nc.prazo_empenho + 'T00:00:00');
                 const hoje = new Date();
                 hoje.setHours(0, 0, 0, 0);
                 const diffTime = prazo - hoje;
@@ -210,7 +154,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
 
-            // Renderiza o gráfico após o HTML do canvas ser inserido na página
             renderChart('grafico-secoes', graficoSecoesData.labels, graficoSecoesData.data);
 
         } catch (error) {
@@ -274,6 +217,21 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    /**
+     * ATUALIZAÇÃO da função navigateTo para incluir a nova view.
+     */
+    function navigateTo(view) {
+        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
+        switch (view) {
+            case 'dashboard':
+                renderDashboardView(appMain);
+                break;
+            // O conteúdo das outras views virá nas próximas partes
+            default:
+                appMain.innerHTML = `<h1>Página em construção</h1>`;
+        }
+    }
+
 // FIM DA PARTE 2 DE 6
 
 /**
@@ -335,7 +293,6 @@ document.addEventListener('DOMContentLoaded', () => {
         await populateFilters();
         await loadAndRenderNotasTable();
 
-        // Adiciona event listeners para os filtros e botões desta view
         document.getElementById('apply-filters-btn').addEventListener('click', () => {
             const filters = {
                 plano_interno: document.getElementById('filter-pi').value,
@@ -444,8 +401,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // ========================================================================
     // 6. LÓGICA DE MODAIS E FORMULÁRIOS
     // ========================================================================
-
-    const modalTemplate = document.getElementById('modal-template');
 
     /**
      * Abre um modal genérico na tela.
@@ -557,6 +512,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const target = e.target.closest('button');
         if (!target) return;
 
+        const action = target.dataset.action;
+        const id = target.dataset.id;
+
         // --- Ação: Adicionar Nova NC ---
         if (target.id === 'add-nc-btn') {
             const formHTML = getNotaCreditoFormHTML();
@@ -565,9 +523,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
         
-        const action = target.dataset.action;
-        const id = target.dataset.id;
-
         // --- Ação: Editar NC ---
         if (action === 'edit-nc') {
             try {
@@ -620,6 +575,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <nav class="sub-nav">
                 <button class="sub-tab-btn" data-subview="secoes">Gerenciar Seções</button>
                 <button class="sub-tab-btn" data-subview="users">Gerenciar Usuários</button>
+                <button class="sub-tab-btn" data-subview="logs">Logs de Auditoria</button>
             </nav>
             <div id="admin-content" class="card">
                 </div>
@@ -649,6 +605,9 @@ document.addEventListener('DOMContentLoaded', () => {
             renderAdminUsersView(container);
         } else if (subView === 'secoes') {
             renderAdminSeçõesView(container);
+        } else if (subView === 'logs'){
+            // A view de Logs virá na próxima e última parte
+            container.innerHTML = `<h3>Logs de Auditoria (Conteúdo virá na Parte 6)</h3>`;
         }
     }
 
@@ -673,7 +632,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         
         await loadAndRenderSeçõesTable();
-        
         container.querySelector('#secao-form').addEventListener('submit', handleSecaoFormSubmit);
     }
 
@@ -749,7 +707,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         
         await loadAndRenderUsersTable();
-        
         container.querySelector('#user-form').addEventListener('submit', handleUserFormSubmit);
     }
 
@@ -760,6 +717,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const tableBody = document.querySelector('#users-table tbody');
         try {
             const users = await fetchWithAuth('/users');
+            appState.users = users;
             tableBody.innerHTML = users.length === 0 ? '<tr><td colspan="5">Nenhum usuário cadastrado.</td></tr>' :
                 users.map(u => `
                     <tr>
@@ -794,13 +752,12 @@ document.addEventListener('DOMContentLoaded', () => {
             alert(`Erro ao criar usuário: ${error.message}`);
         }
     }
-    
+
     /**
-     * ATUALIZAÇÃO FINAL da função navigateTo para incluir a nova view de Admin.
+     * ATUALIZAÇÃO da função navigateTo para incluir a view de Admin.
      */
     function navigateTo(view) {
         appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        
         switch (view) {
             case 'dashboard':
                 renderDashboardView(appMain);
@@ -808,12 +765,15 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'notasCredito':
                 renderNotasCreditoView(appMain);
                 break;
-            case 'admin':
-                renderAdminView(appMain); // A view admin agora tem suas próprias sub-abas
+            case 'empenhos':
+                // renderEmpenhosView(appMain); // Esta função virá em uma parte futura
+                appMain.innerHTML = `<h1>Página de Empenhos em construção</h1>`;
                 break;
-            // Outras views principais seriam adicionadas aqui
+            case 'admin':
+                renderAdminView(appMain);
+                break;
             default:
-                appMain.innerHTML = `<h1>Página em construção</h1>`;
+                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
         }
     }
 
@@ -833,63 +793,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 </table>
             </div>
             <div class="pagination">
-                <button id="prev-page-btn" class="btn">Anterior</button>
-                <span id="page-info">Página 1</span>
-                <button id="next-page-btn" class="btn">Próxima</button>
-            </div>
+                </div>
         `;
-
-        let currentPage = 0;
-        const pageSize = 50; // Quantos logs por página
-
-        const loadPage = (page) => {
-            loadAndRenderAuditLogsTable(page, pageSize);
-        };
-
-        document.getElementById('prev-page-btn').addEventListener('click', () => {
-            if (currentPage > 0) {
-                currentPage--;
-                loadPage(currentPage);
-            }
-        });
-
-        document.getElementById('next-page-btn').addEventListener('click', () => {
-            currentPage++;
-            loadPage(currentPage);
-        });
-
-        loadPage(currentPage); // Carrega a primeira página
+        await loadAndRenderAuditLogsTable();
     }
 
     /**
-     * Carrega e renderiza a tabela de logs de auditoria com paginação.
+     * Carrega e renderiza a tabela de logs de auditoria.
      */
-    async function loadAndRenderAuditLogsTable(page = 0, limit = 50) {
+    async function loadAndRenderAuditLogsTable() {
         const tableBody = document.querySelector('#logs-table tbody');
-        const pageInfo = document.getElementById('page-info');
-        const prevBtn = document.getElementById('prev-page-btn');
-        const nextBtn = document.getElementById('next-page-btn');
-
         tableBody.innerHTML = '<tr><td colspan="4">Carregando logs...</td></tr>';
-        pageInfo.textContent = `Página ${page + 1}`;
-        prevBtn.disabled = page === 0;
 
         try {
-            const skip = page * limit;
-            const logs = await fetchWithAuth(`/audit-logs?skip=${skip}&limit=${limit}`);
+            // Por padrão, busca os 100 logs mais recentes.
+            const logs = await fetchWithAuth(`/audit-logs?limit=100`);
             
-            nextBtn.disabled = logs.length < limit;
-
-            if (logs.length === 0 && page === 0) {
+            if (logs.length === 0) {
                 tableBody.innerHTML = '<tr><td colspan="4">Nenhum log de auditoria encontrado.</td></tr>';
                 return;
             }
 
             tableBody.innerHTML = logs.map(log => `
                 <tr>
-                    <td>${new Date(log.timestamp).toLocaleString('pt-BR')}</td>
+                    <td>${new Date(log.timestamp).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
                     <td>${log.username}</td>
-                    <td>${log.action}</td>
+                    <td><span class="log-action">${log.action}</span></td>
                     <td>${log.details || ''}</td>
                 </tr>
             `).join('');
@@ -904,28 +833,25 @@ document.addEventListener('DOMContentLoaded', () => {
      */
     function navigateTo(view) {
         appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        const subViewMap = {
-            'admin-users': 'users',
-            'admin-secoes': 'secoes',
-            'admin-logs': 'logs'
-        };
         
-        const adminViews = ['admin-users', 'admin-secoes', 'admin-logs'];
+        const mainAdminView = view.startsWith('admin') ? 'admin' : view;
 
-        if (adminViews.includes(view)) {
-             renderAdminView(appMain, subViewMap[view]);
-        } else {
-            switch (view) {
-                case 'dashboard':
-                    renderDashboardView(appMain);
-                    break;
-                case 'notasCredito':
-                    renderNotasCreditoView(appMain);
-                    break;
-                // Adicionar outras views principais (Empenhos, etc.) aqui
-                default:
-                    appMain.innerHTML = `<h1>Página em construção</h1>`;
-            }
+        switch (mainAdminView) {
+            case 'dashboard':
+                renderDashboardView(appMain);
+                break;
+            case 'notasCredito':
+                renderNotasCreditoView(appMain);
+                break;
+            case 'empenhos':
+                renderEmpenhosView(appMain);
+                break;
+            case 'admin':
+                const subView = view.split('-')[1] || 'secoes'; // Padrão para 'secoes'
+                renderAdminView(appMain, subView);
+                break;
+            default:
+                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
         }
     }
     
