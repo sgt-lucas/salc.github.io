@@ -699,15 +699,11 @@ class DashboardKPIs(BaseModel):
 def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Futuramente, os filtros podem ser aplicados a estas queries
     saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
-    valor_total_original = db.query(func.sum(NotaCredito.valor)).scalar() or 0.0
     ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
     
-    # O valor empenhado total é a diferença entre o valor original total e o saldo total disponível
-    # Esta é uma aproximação que pode ser refinada somando diretamente os empenhos e subtraindo as anulações
     soma_empenhos = db.query(func.sum(Empenho.valor)).scalar() or 0.0
     soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).scalar() or 0.0
-    valor_empenhado_liquido = soma_empenhos - soma_anulacoes
-
+    valor_empenhado_liquido = (soma_empenhos or 0.0) - (soma_anulacoes or 0.0)
 
     return {
         "saldo_disponivel_total": saldo_total,
@@ -747,7 +743,6 @@ def get_grafico_secoes(db: Session = Depends(get_db), current_user: User = Depen
 def get_relatorio_pdf(
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user),
-    # Adicionar os mesmos filtros do endpoint GET /notas-credito
     plano_interno: Optional[str] = Query(None),
     nd: Optional[str] = Query(None),
     secao_responsavel_id: Optional[int] = Query(None),
@@ -760,6 +755,8 @@ def get_relatorio_pdf(
     styles = getSampleStyleSheet()
     styles['h2'].alignment = 1 # Centralizado
     styles['h1'].alignment = 1 # Centralizado
+    styles['Normal'].fontSize = 8
+    
     elements = []
 
     # --- Cabeçalho ---
@@ -772,14 +769,14 @@ def get_relatorio_pdf(
     elements.append(Spacer(1, 0.2*inch))
     
     # Título Dinâmico
-    titulo = "RELATÓRIO DE NOTAS DE CRÉDITO"
+    titulo = "RELATÓRIO GERAL DE NOTAS DE CRÉDITO"
     # Lógica para tornar o título mais específico com base nos filtros
     if plano_interno:
-        titulo = f"RELATÓRIO DE NCs POR PLANO INTERNO: {plano_interno}"
+        titulo = f"RELATÓRIO DE NCs DO PLANO INTERNO: {plano_interno}"
     elif secao_responsavel_id:
         secao = db.query(Seção).filter(Seção.id == secao_responsavel_id).first()
         if secao:
-            titulo = f"RELATÓRIO DE NCs POR SEÇÃO: {secao.nome}"
+            titulo = f"RELATÓRIO DE NCs DA SEÇÃO: {secao.nome}"
 
     elements.append(Paragraph(titulo, styles['h1']))
     elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
@@ -787,10 +784,15 @@ def get_relatorio_pdf(
 
     # --- Conteúdo (Relatório Geral de Saldos com Filtros) ---
     query = db.query(NotaCredito).order_by(NotaCredito.plano_interno)
+    
     # Aplica os mesmos filtros do endpoint GET
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
-    # ... outros filtros ...
+    if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
+    if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
+    if data_inicio: query = query.filter(NotaCredito.data_chegada >= data_inicio)
+    if data_fim: query = query.filter(NotaCredito.data_chegada <= data_fim)
+    
     ncs = query.all()
     
     table_data = [
