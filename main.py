@@ -20,7 +20,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 # PDF Reporting
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
@@ -770,7 +770,6 @@ def get_relatorio_pdf(
     
     # Título Dinâmico
     titulo = "RELATÓRIO GERAL DE NOTAS DE CRÉDITO"
-    # Lógica para tornar o título mais específico com base nos filtros
     if plano_interno:
         titulo = f"RELATÓRIO DE NCs DO PLANO INTERNO: {plano_interno}"
     elif secao_responsavel_id:
