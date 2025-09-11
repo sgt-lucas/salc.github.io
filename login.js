@@ -48,7 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             errorMessage.textContent = `Erro: ${error.message}`;
         } finally {
-            // Reabilita o botão
+            // Reabilita o botão, independentemente do resultado
             submitButton.disabled = false;
             submitButton.textContent = 'Entrar';
         }
