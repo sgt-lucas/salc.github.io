@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Gestão de Notas de Crédito</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div id="app-container" class="app-container">
+        <header class="app-header">
+            <div class="logo-container">
+                <h3>SISTEMA DE GESTÃO DE NOTAS DE CRÉDITO</h3>
+                <span>2º CENTRO DE GEOINFORMAÇÃO</span>
+            </div>
+            <div class="user-menu">
+                <span id="username-display">Carregando...</span>
+                <button id="logout-btn" title="Sair do sistema">
+                    <i class="fas fa-sign-out-alt"></i> Sair
+                </button>
+            </div>
+        </header>
+
+        <nav id="app-nav" class="app-nav">
+            </nav>
+
+        <main id="app-main" class="app-main">
+            <div class="loading-spinner">
+                <p>Carregando aplicação...</p>
+            </div>
+        </main>
+
+        <footer class="app-footer">
+            <p>Sistema de Gestão de Notas de Crédito v2.0.0</p>
+        </footer>
+    </div>
+
+    <div id="modal-container"></div>
+
+    <template id="modal-template">
+        <div class="modal-backdrop">
+            <div class="modal">
+                <div class="modal-header">
+                    <h3 class="modal-title"></h3>
+                    <button class="modal-close-btn">&times;</button>
+                </div>
+                <div class="modal-body">
+                </div>
+            </div>
+        </div>
+    </template>
+    
+    <script src="main.js"></script>
+</body>
+</html>
