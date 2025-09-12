@@ -510,7 +510,7 @@ def update_nota_credito(nc_id: int, nc_update: NotaCreditoCreate, db: Session = 
     # A alteração do valor total da NC deve recalcular o saldo disponível
     valor_ja_empenhado = db_nc.valor - db_nc.saldo_disponivel
     novo_saldo = nc_update.valor - valor_ja_empenhado
-    if novo_saldo < 0:
+    if novo_saldo < -0.001: # Adicionar tolerância para erros de ponto flutuante
         raise HTTPException(status_code=400, detail="O novo valor total é menor que o valor já empenhado nesta NC.")
 
     # Atualiza os campos do objeto
@@ -586,7 +586,6 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
     try:
         db_empenho = Empenho(**empenho_in.dict())
         
-        # Atualiza o saldo e o status da NC
         db_nc.saldo_disponivel -= empenho_in.valor
         if db_nc.saldo_disponivel <= 0.001: # Usar tolerância para ponto flutuante
             db_nc.saldo_disponivel = 0
