@@ -124,7 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-// FIM DA PARTE 1 DE 6
+// FIM DA PARTE 1 DE 7
 
 // ========================================================================
     // 5. LÓGICA DAS VIEWS
@@ -272,7 +272,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-// FIM DA PARTE 2 DE 6
+// FIM DA PARTE 2 DE 7
 
 /**
      * Renderiza a view de Notas de Crédito, incluindo filtros e a tabela.
@@ -349,18 +349,18 @@ document.addEventListener('DOMContentLoaded', () => {
      */
     async function populateFilters() {
         try {
-            const [secoes, notasCredito] = await Promise.all([
-                fetchWithAuth('/secoes'),
-                fetchWithAuth('/notas-credito')
-            ]);
-
-            appState.secoes = secoes;
+            // Se as seções já foram carregadas, não busca novamente.
+            if (appState.secoes.length === 0) {
+                appState.secoes = await fetchWithAuth('/secoes');
+            }
+            // Sempre busca as NCs para ter a lista mais atual de PIs e NDs
+            const notasCredito = await fetchWithAuth('/notas-credito');
 
             const piSelect = document.getElementById('filter-pi');
             const ndSelect = document.getElementById('filter-nd');
             const secaoSelect = document.getElementById('filter-secao');
 
-            secaoSelect.innerHTML = '<option value="">Todas</option>' + secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
+            secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
 
             const planosInternos = [...new Set(notasCredito.map(nc => nc.plano_interno))];
             const naturezasDespesa = [...new Set(notasCredito.map(nc => nc.nd))];
@@ -369,7 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
             ndSelect.innerHTML = '<option value="">Todas</option>' + naturezasDespesa.sort().map(nd => `<option value="${nd}">${nd}</option>`).join('');
         } catch(error) {
             console.error("Erro ao popular filtros:", error);
-            // Poderia adicionar uma mensagem de erro na UI aqui
         }
     }
 
@@ -392,7 +391,7 @@ document.addEventListener('DOMContentLoaded', () => {
             appState.notasCredito = notas;
 
             if (notas.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">Nenhuma Nota de Crédito encontrada para os filtros selecionados.</td></tr>`;
+                tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">Nenhuma Nota de Crédito encontrada.</td></tr>`;
                 return;
             }
 
@@ -415,29 +414,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 </tr>
             `).join('');
         } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center; color: var(--cor-erro);">Erro ao carregar dados: ${error.message}</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="9" class="error-message">Erro ao carregar dados: ${error.message}</td></tr>`;
         }
     }
 
-    /**
-     * ATUALIZAÇÃO da função navigateTo para incluir a nova view.
-     */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        switch (view) {
-            case 'dashboard':
-                renderDashboardView(appMain);
-                break;
-            case 'notasCredito':
-                renderNotasCreditoView(appMain);
-                break;
-            // Outras views serão adicionadas nas próximas partes
-            default:
-                appMain.innerHTML = `<h1>Página em construção</h1>`;
-        }
-    }
-    
-// FIM DA PARTE 3 DE 6
+// FIM DA PARTE 3 DE 7
 
 // ========================================================================
     // 6. LÓGICA DE MODAIS E FORMULÁRIOS
@@ -536,7 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getCurrentFilters() {
-        const view = document.querySelector('.tab-btn.active').dataset.view;
+        const view = document.querySelector('.tab-btn.active')?.dataset.view;
         if (view === 'notasCredito') {
             return {
                 plano_interno: document.getElementById('filter-pi')?.value,
@@ -547,67 +528,90 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         return {};
     }
-    
-    // ========================================================================
-    // 7. MANIPULADORES DE EVENTOS GLOBAIS (Event Handlers)
-    // ========================================================================
 
-    // Delegação de eventos no container <main> para ações dinâmicas
-    appMain.addEventListener('click', async (e) => {
-        const target = e.target.closest('button');
-        if (!target) return;
-
-        const action = target.dataset.action;
-        const id = target.closest('tr')?.dataset.id; // Pega o ID da linha da tabela
-
-        // --- Ação: Adicionar Nova NC ---
-        if (target.id === 'add-nc-btn') {
-            const formHTML = getNotaCreditoFormHTML();
-            openModal('Adicionar Nova Nota de Crédito', formHTML, (modalElement) => {
-                modalElement.querySelector('#nc-form').addEventListener('submit', handleNcFormSubmit);
-            });
-        }
-        
-        // --- Ação: Editar NC ---
-        if (action === 'edit-nc') {
-            try {
-                const ncData = await fetchWithAuth(`/notas-credito/${id}`);
-                const formHTML = getNotaCreditoFormHTML(ncData);
-                openModal(`Editar Nota de Crédito: ${ncData.numero_nc}`, formHTML, (modalElement) => {
-                    modalElement.querySelector('#nc-form').addEventListener('submit', handleNcFormSubmit);
-                });
-            } catch (error) {
-                alert(`Erro ao buscar dados da NC: ${error.message}`);
-            }
-        }
-
-        // --- Ação: Excluir NC ---
-        if (action === 'delete-nc') {
-            const numeroNc = target.dataset.numero;
-            if (confirm(`Tem certeza que deseja excluir a Nota de Crédito "${numeroNc}"?\n\nEsta ação não pode ser desfeita.`)) {
-                try {
-                    await fetchWithAuth(`/notas-credito/${id}`, { method: 'DELETE' });
-                    const currentFilters = getCurrentFilters();
-                    await loadAndRenderNotasTable(currentFilters);
-                } catch (error) {
-                    alert(`Erro ao excluir NC: ${error.message}`);
-                }
-            }
-        }
-    });
-
-// FIM DA PARTE 4 DE 6
+// FIM DA PARTE 4 DE 7
 
 // ========================================================================
-    // 8. LÓGICA DAS VIEWS DE ADMINISTRAÇÃO
+    // 8. LÓGICA DAS VIEWS RESTANTES
     // ========================================================================
 
     /**
-     * Renderiza a view principal de Administração com suas sub-abas.
+     * Renderiza a view de Empenhos.
      * @param {HTMLElement} container - O elemento <main> onde a view será renderizada.
-     * @param {string} subView - A sub-aba a ser mostrada por padrão ('secoes' ou 'users').
      */
-    function renderAdminView(container, subView = 'secoes') {
+    async function renderEmpenhosView(container) {
+        container.innerHTML = `
+            <div class="view-header">
+                <h1>Gestão de Empenhos</h1>
+                </div>
+            <div class="table-container card">
+                <table id="empenhos-table">
+                    <thead>
+                        <tr>
+                            <th>Nº do Empenho</th>
+                            <th>Nº da NC Associada</th>
+                            <th>Seção</th>
+                            <th>Valor</th>
+                            <th>Data</th>
+                            <th>Observação</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td colspan="7" style="text-align:center;">Carregando dados...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        `;
+        await loadAndRenderEmpenhosTable();
+    }
+
+    /**
+     * Carrega os Empenhos da API e renderiza a tabela.
+     */
+    async function loadAndRenderEmpenhosTable() {
+        const tableBody = document.querySelector('#empenhos-table tbody');
+        tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Buscando dados...</td></tr>`;
+        try {
+            const [empenhos, notas, secoes] = await Promise.all([
+                fetchWithAuth(`/empenhos`),
+                fetchWithAuth('/notas-credito'),
+                fetchWithAuth('/secoes')
+            ]);
+            
+            appState.empenhos = empenhos;
+            const ncMap = new Map(notas.map(nc => [nc.id, nc.numero_nc]));
+            const secoesMap = new Map(secoes.map(s => [s.id, s.nome]));
+
+            if (empenhos.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Nenhum empenho encontrado.</td></tr>`;
+                return;
+            }
+
+            tableBody.innerHTML = empenhos.map(e => `
+                <tr data-id="${e.id}">
+                    <td>${e.numero_ne}</td>
+                    <td>${ncMap.get(e.nota_credito_id) || 'N/A'}</td>
+                    <td>${secoesMap.get(e.secao_requisitante_id) || 'N/A'}</td>
+                    <td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                    <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                    <td>${e.observacao || ''}</td>
+                    <td class="actions">
+                        ${currentUser.role === 'ADMINISTRADOR' ? 
+                            `<button class="btn-icon btn-delete" data-action="delete-empenho" data-numero="${e.numero_ne}" title="Excluir Empenho"><i class="fas fa-trash"></i></button>` : ''}
+                    </td>
+                </tr>
+            `).join('');
+        } catch (error) {
+            tableBody.innerHTML = `<tr><td colspan="7" class="error-message">Erro ao carregar empenhos: ${error.message}</td></tr>`;
+        }
+    }
+
+
+    /**
+     * Renderiza a view principal de Administração com suas sub-abas.
+     */
+    async function renderAdminView(container, subView = 'secoes') {
         if (currentUser.role !== 'ADMINISTRADOR') {
             container.innerHTML = `<div class="error-message">Acesso negado. Esta área é restrita a administradores.</div>`;
             return;
@@ -622,12 +626,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 <button class="sub-tab-btn" data-subview="users">Gerenciar Usuários</button>
                 <button class="sub-tab-btn" data-subview="logs">Logs de Auditoria</button>
             </nav>
-            <div id="admin-content" class="card">
-                </div>
+            <div id="admin-content" class="card"></div>
         `;
 
         const adminContent = document.getElementById('admin-content');
-
         container.querySelector('.sub-nav').addEventListener('click', (e) => {
             if (e.target.matches('.sub-tab-btn')) {
                 const newSubView = e.target.dataset.subview;
@@ -638,21 +640,19 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         container.querySelector(`.sub-tab-btn[data-subview="${subView}"]`).classList.add('active');
-        renderAdminSubView(adminContent, subView);
+        await renderAdminSubView(adminContent, subView);
     }
-    
+
     /**
      * Roteador para o conteúdo da área de administração.
      */
-    function renderAdminSubView(container, subView) {
+    async function renderAdminSubView(container, subView) {
         container.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        if (subView === 'users') {
-            renderAdminUsersView(container);
-        } else if (subView === 'secoes') {
-            renderAdminSeçõesView(container);
-        } else if (subView === 'logs'){
-            // A view de Logs virá na próxima e última parte
-            renderAdminLogsView(container);
+        switch (subView) {
+            case 'users': await renderAdminUsersView(container); break;
+            case 'secoes': await renderAdminSeçõesView(container); break;
+            case 'logs': await renderAdminLogsView(container); break;
+            default: container.innerHTML = 'Selecione uma opção.';
         }
     }
 
@@ -675,12 +675,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 </table>
             </div>
         `;
-        
         await loadAndRenderSeçõesTable();
         container.querySelector('#secao-form').addEventListener('submit', handleSecaoFormSubmit);
     }
 
     /**
+     * Renderiza a interface para gerenciamento de usuários.
+     */
+    async function renderAdminUsersView(container) {
+        container.innerHTML = `
+            <h3>Gerenciar Usuários</h3>
+            <p>Adicione novos usuários e defina seus perfis de acesso.</p>
+            <form id="user-form" class="admin-form-grid">
+                <input type="text" name="username" placeholder="Nome de usuário" required>
+                <input type="email" name="email" placeholder="E-mail" required>
+                <input type="password" name="password" placeholder="Senha" required>
+                <select name="role" required>
+                    <option value="OPERADOR">Operador</option>
+                    <option value="ADMINISTRADOR">Administrador</option>
+                </select>
+                <button type="submit" class="btn btn-primary">Adicionar Usuário</button>
+            </form>
+            <div class="table-container" style="margin-top: 1.5rem;">
+                <table id="users-table">
+                    <thead><tr><th>ID</th><th>Usuário</th><th>E-mail</th><th>Perfil</th><th>Ações</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        `;
+        await loadAndRenderUsersTable();
+        container.querySelector('#user-form').addEventListener('submit', handleUserFormSubmit);
+    }
+
+// FIM DA PARTE 5 DE 7
+
+/**
      * Carrega e renderiza a tabela de seções.
      */
     async function loadAndRenderSeçõesTable() {
@@ -727,35 +756,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     /**
-     * Renderiza a interface para gerenciamento de usuários.
-     */
-    async function renderAdminUsersView(container) {
-        container.innerHTML = `
-            <h3>Gerenciar Usuários</h3>
-            <p>Adicione novos usuários e defina seus perfis de acesso.</p>
-            <form id="user-form" class="admin-form-grid">
-                <input type="text" name="username" placeholder="Nome de usuário" required>
-                <input type="email" name="email" placeholder="E-mail" required>
-                <input type="password" name="password" placeholder="Senha" required>
-                <select name="role" required>
-                    <option value="OPERADOR">Operador</option>
-                    <option value="ADMINISTRADOR">Administrador</option>
-                </select>
-                <button type="submit" class="btn btn-primary">Adicionar Usuário</button>
-            </form>
-            <div class="table-container" style="margin-top: 1.5rem;">
-                <table id="users-table">
-                    <thead><tr><th>ID</th><th>Usuário</th><th>E-mail</th><th>Perfil</th><th>Ações</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-        `;
-        
-        await loadAndRenderUsersTable();
-        container.querySelector('#user-form').addEventListener('submit', handleUserFormSubmit);
-    }
-
-    /**
      * Carrega e renderiza a tabela de usuários.
      */
     async function loadAndRenderUsersTable() {
@@ -793,38 +793,13 @@ document.addEventListener('DOMContentLoaded', () => {
             await fetchWithAuth('/users', { method: 'POST', body: JSON.stringify(data) });
             form.reset();
             await loadAndRenderUsersTable();
-        } catch (error) {
+        } catch (error)
+        {
             alert(`Erro ao criar usuário: ${error.message}`);
         }
     }
-    
+
     /**
-     * ATUALIZAÇÃO da função navigateTo para incluir a view de Admin.
-     */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        switch (view) {
-            case 'dashboard':
-                renderDashboardView(appMain);
-                break;
-            case 'notasCredito':
-                renderNotasCreditoView(appMain);
-                break;
-            case 'empenhos':
-                // renderEmpenhosView(appMain); // Esta função virá em uma parte futura
-                appMain.innerHTML = `<h1>Página de Empenhos em construção</h1>`;
-                break;
-            case 'admin':
-                renderAdminView(appMain); // A view admin agora tem suas próprias sub-abas
-                break;
-            default:
-                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
-        }
-    }
-
-// FIM DA PARTE 5 DE 6
-
-/**
      * Renderiza a interface para visualização dos logs de auditoria.
      */
     async function renderAdminLogsView(container) {
@@ -903,10 +878,14 @@ document.addEventListener('DOMContentLoaded', () => {
             tableBody.innerHTML = `<tr><td colspan="4" class="error-message">Erro ao carregar logs: ${error.message}</td></tr>`;
         }
     }
-    
-    /**
-     * ATUALIZAÇÃO FINAL do manipulador de eventos para incluir as ações de administração.
-     */
+
+// FIM DA PARTE 6 DE 7
+
+// ========================================================================
+    // 7. MANIPULADOR DE EVENTOS GLOBAIS (Event Handlers)
+    // ========================================================================
+
+    // Delegação de eventos no container <main> para ações dinâmicas
     appMain.addEventListener('click', async (e) => {
         const target = e.target.closest('button');
         if (!target) return;
@@ -914,11 +893,41 @@ document.addEventListener('DOMContentLoaded', () => {
         const action = target.dataset.action;
         const id = target.closest('tr')?.dataset.id;
 
-        // Ações da View de Notas de Crédito
-        if (target.id === 'add-nc-btn') { /* ... (já implementado na Parte 4) ... */ }
-        if (action === 'edit-nc') { /* ... (já implementado na Parte 4) ... */ }
-        if (action === 'delete-nc') { /* ... (já implementado na Parte 4) ... */ }
+        // --- Ação: Adicionar Nova NC ---
+        if (target.id === 'add-nc-btn') {
+            const formHTML = getNotaCreditoFormHTML();
+            openModal('Adicionar Nova Nota de Crédito', formHTML, (modalElement) => {
+                modalElement.querySelector('#nc-form').addEventListener('submit', handleNcFormSubmit);
+            });
+        }
+        
+        // --- Ação: Editar NC ---
+        if (action === 'edit-nc') {
+            try {
+                const ncData = await fetchWithAuth(`/notas-credito/${id}`);
+                const formHTML = getNotaCreditoFormHTML(ncData);
+                openModal(`Editar Nota de Crédito: ${ncData.numero_nc}`, formHTML, (modalElement) => {
+                    modalElement.querySelector('#nc-form').addEventListener('submit', handleNcFormSubmit);
+                });
+            } catch (error) {
+                alert(`Erro ao buscar dados da NC: ${error.message}`);
+            }
+        }
 
+        // --- Ação: Excluir NC ---
+        if (action === 'delete-nc') {
+            const numeroNc = target.dataset.numero;
+            if (confirm(`Tem certeza que deseja excluir a Nota de Crédito "${numeroNc}"?\n\nEsta ação não pode ser desfeita.`)) {
+                try {
+                    await fetchWithAuth(`/notas-credito/${id}`, { method: 'DELETE' });
+                    const currentFilters = getCurrentFilters();
+                    await loadAndRenderNotasTable(currentFilters);
+                } catch (error) {
+                    alert(`Erro ao excluir NC: ${error.message}`);
+                }
+            }
+        }
+        
         // Ações da View de Administração - Seções
         if (action === 'edit-secao') {
             const nome = target.dataset.nome;
@@ -944,7 +953,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const username = target.dataset.username;
             if (confirm(`Tem certeza que deseja excluir o usuário "${username}"?`)) {
                 try {
-                    // Assumindo que o endpoint DELETE /users/{id} existe no backend
                     await fetchWithAuth(`/users/${id}`, { method: 'DELETE' });
                     await loadAndRenderUsersTable();
                 } catch (error) {
@@ -954,40 +962,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    /**
-     * ATUALIZAÇÃO FINAL da função de navegação para incluir todas as views.
-     */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        
-        const mainAdminView = view.startsWith('admin') ? 'admin' : view;
-
-        switch (mainAdminView) {
-            case 'dashboard':
-                renderDashboardView(appMain);
-                break;
-            case 'notasCredito':
-                renderNotasCreditoView(appMain);
-                break;
-            case 'empenhos':
-                // renderEmpenhosView(appMain); // Esta função será adicionada em uma futura melhoria
-                appMain.innerHTML = `<h1>Página de Empenhos em construção</h1>`;
-                break;
-            case 'admin':
-                const subView = view.split('-')[1] || 'secoes'; // Padrão para 'secoes'
-                renderAdminView(appMain, subView);
-                break;
-            default:
-                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
-        }
-    }
-    
     // ========================================================================
     // 9. INICIALIZAÇÃO DA APLICAÇÃO
     // ========================================================================
     
+    // Inicia todo o processo de verificação e renderização.
     initApp();
 });
 
-// FIM DA PARTE 6 DE 6
+// FIM DA PARTE 7 DE 7
 // O ARQUIVO main.js ESTÁ COMPLETO
