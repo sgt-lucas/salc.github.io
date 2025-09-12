@@ -1,40 +1,34 @@
+<!-- login.html -->
 <!DOCTYPE html>
-<html lang="pt-br">
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Sistema de Gestão de NC</title>
+    <title>Login - Sistema de Gestão de Notas de Crédito</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="login-container">
         <div class="login-card">
-            
             <div class="login-header">
-                <h2>
-                    MINISTÉRIO DA DEFESA<br>
-                    EXÉRCITO BRASILEIRO<br>
-                    2º CENTRO DE GEOINFORMAÇÃO
-                </h2>
+                <h2>MINISTÉRIO DA DEFESA<br>EXÉRCITO BRASILEIRO<br>2º CENTRO DE GEOINFORMAÇÃO</h2>
                 <h3>Sistema de Gestão de Notas de Crédito</h3>
             </div>
-            
             <form id="login-form">
                 <div class="form-field">
                     <label for="username">Usuário</label>
-                    <input type="text" id="username" name="username" required autocomplete="username">
+                    <input type="text" id="username" name="username" required>
                 </div>
                 <div class="form-field">
                     <label for="password">Senha</label>
-                    <input type="password" id="password" name="password" required autocomplete="current-password">
+                    <input type="password" id="password" name="password" required>
                 </div>
                 <button type="submit">Entrar</button>
             </form>
-            
-            <p id="error-message" class="error-message"></p>
-            
+            <div id="error-message" class="error-message"></div>
         </div>
     </div>
+
     <script src="login.js"></script>
 </body>
 </html>
