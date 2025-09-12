@@ -558,7 +558,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!target) return;
 
         const action = target.dataset.action;
-        const id = target.dataset.id;
+        const id = target.closest('tr')?.dataset.id; // Pega o ID da linha da tabela
 
         // --- Ação: Adicionar Nova NC ---
         if (target.id === 'add-nc-btn') {
@@ -912,12 +912,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!target) return;
 
         const action = target.dataset.action;
-        const id = target.dataset.id;
+        const id = target.closest('tr')?.dataset.id;
 
         // Ações da View de Notas de Crédito
-        if (target.id === 'add-nc-btn') { /* ... */ }
-        if (action === 'edit-nc') { /* ... */ }
-        if (action === 'delete-nc') { /* ... */ }
+        if (target.id === 'add-nc-btn') { /* ... (já implementado na Parte 4) ... */ }
+        if (action === 'edit-nc') { /* ... (já implementado na Parte 4) ... */ }
+        if (action === 'delete-nc') { /* ... (já implementado na Parte 4) ... */ }
 
         // Ações da View de Administração - Seções
         if (action === 'edit-secao') {
@@ -944,7 +944,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const username = target.dataset.username;
             if (confirm(`Tem certeza que deseja excluir o usuário "${username}"?`)) {
                 try {
-                    await fetchWithAuth(`/users/${id}`, { method: 'DELETE' }); // Supondo que este endpoint exista
+                    // Assumindo que o endpoint DELETE /users/{id} existe no backend
+                    await fetchWithAuth(`/users/${id}`, { method: 'DELETE' });
                     await loadAndRenderUsersTable();
                 } catch (error) {
                     alert(`Erro ao excluir usuário: ${error.message}`);
@@ -953,6 +954,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    /**
+     * ATUALIZAÇÃO FINAL da função de navegação para incluir todas as views.
+     */
+    function navigateTo(view) {
+        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
+        
+        const mainAdminView = view.startsWith('admin') ? 'admin' : view;
+
+        switch (mainAdminView) {
+            case 'dashboard':
+                renderDashboardView(appMain);
+                break;
+            case 'notasCredito':
+                renderNotasCreditoView(appMain);
+                break;
+            case 'empenhos':
+                // renderEmpenhosView(appMain); // Esta função será adicionada em uma futura melhoria
+                appMain.innerHTML = `<h1>Página de Empenhos em construção</h1>`;
+                break;
+            case 'admin':
+                const subView = view.split('-')[1] || 'secoes'; // Padrão para 'secoes'
+                renderAdminView(appMain, subView);
+                break;
+            default:
+                appMain.innerHTML = `<h1>Página não encontrada.</h1>`;
+        }
+    }
+    
     // ========================================================================
     // 9. INICIALIZAÇÃO DA APLICAÇÃO
     // ========================================================================
