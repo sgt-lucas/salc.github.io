@@ -1,16 +1,9 @@
+// main.js
 document.addEventListener('DOMContentLoaded', () => {
-    // ========================================================================
-    // 1. CONFIGURAÇÃO INICIAL E ESTADO DA APLICAÇÃO
-    // ========================================================================
-
-    // ATENÇÃO: PASSO CRUCIAL APÓS O DEPLOY DO BACKEND
-    // Substitua a URL abaixo pela URL real da sua API fornecida pela Render.
+    // Configuração inicial e estado da aplicação
     const API_URL = 'https://salc.onrender.com';
-
     const accessToken = localStorage.getItem('accessToken');
-    let currentUser = null; // Armazenará { username, role, ... }
-    
-    // Cache de dados para evitar requisições repetidas
+    let currentUser = null;
     let appState = {
         secoes: [],
         notasCredito: [],
@@ -19,7 +12,6 @@ document.addEventListener('DOMContentLoaded', () => {
         auditLogs: [],
     };
 
-    // Referências aos elementos principais do DOM
     const appNav = document.getElementById('app-nav');
     const appMain = document.getElementById('app-main');
     const usernameDisplay = document.getElementById('username-display');
@@ -27,48 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalContainer = document.getElementById('modal-container');
     const modalTemplate = document.getElementById('modal-template');
 
-    // ========================================================================
-    // 2. INICIALIZAÇÃO E AUTENTICAÇÃO
-    // ========================================================================
-
-    /**
-     * Função principal que inicia a aplicação. Verifica o token, busca os dados
-     * do usuário e renderiza o layout inicial.
-     */
-    async function initApp() {
-        if (!accessToken) {
-            window.location.href = 'login.html';
-            return;
-        }
-        try {
-            currentUser = await fetchWithAuth('/users/me');
-            renderLayout();
-            navigateTo('dashboard'); // A view inicial é o Dashboard
-        } catch (error) {
-            console.error('Falha na autenticação ou inicialização:', error);
-            logout();
-        }
-    }
-
-    /**
-     * Limpa o token de acesso e redireciona para a página de login.
-     */
-    function logout() {
-        localStorage.removeItem('accessToken');
-        window.location.href = 'login.html';
-    }
-
-    // ========================================================================
-    // 3. FUNÇÃO AUXILIAR PARA REQUISIÇÕES À API
-    // ========================================================================
-
-    /**
-     * Wrapper para a função fetch que adiciona automaticamente o header de
-     * autorização e trata erros comuns como token expirado.
-     * @param {string} endpoint - O endpoint da API a ser chamado (ex: '/users/me').
-     * @param {object} options - Opções padrão da função fetch (method, body, etc.).
-     * @returns {Promise<any>} - A resposta JSON da API.
-     */
+    // Função auxiliar para requisições à API
     async function fetchWithAuth(endpoint, options = {}) {
         const headers = {
             'Content-Type': 'application/json',
@@ -78,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
 
-        if (response.status === 401) { // Token expirado ou inválido
+        if (response.status === 401) {
             logout();
             throw new Error('Sessão expirada. Por favor, faça login novamente.');
         }
@@ -87,24 +38,36 @@ document.addEventListener('DOMContentLoaded', () => {
             const errorData = await response.json();
             throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
         }
-        
-        if (options.responseType === 'blob') {
-            return response.blob();
-        }
+
         return response.status === 204 ? null : response.json();
     }
 
-    // ========================================================================
-    // 4. RENDERIZAÇÃO DO LAYOUT E NAVEGAÇÃO
-    // ========================================================================
+    // Inicialização e autenticação
+    async function initApp() {
+        if (!accessToken) {
+            window.location.href = 'login.html';
+            return;
+        }
+        try {
+            currentUser = await fetchWithAuth('/users/me');
+            renderLayout();
+            await navigateTo('dashboard');
+        } catch (error) {
+            console.error('Falha na autenticação ou inicialização:', error);
+            logout();
+        }
+    }
 
-    /**
-     * Renderiza os componentes estáticos do layout, como o cabeçalho e as abas de navegação.
-     */
+    function logout() {
+        localStorage.removeItem('accessToken');
+        window.location.href = 'login.html';
+    }
+
+    // Renderização do layout e navegação
     function renderLayout() {
         usernameDisplay.textContent = `Usuário: ${currentUser.username} (${currentUser.role})`;
         logoutBtn.addEventListener('click', logout);
-        
+
         let navHTML = `
             <button class="tab-btn active" data-view="dashboard">Dashboard</button>
             <button class="tab-btn" data-view="notasCredito">Notas de Crédito</button>
@@ -124,19 +87,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-// FIM DA PARTE 1 DE 7
+    async function navigateTo(view) {
+        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
+        switch (view) {
+            case 'dashboard':
+                await renderDashboardView(appMain);
+                break;
+            case 'notasCredito':
+                await renderNotasCreditoView(appMain);
+                break;
+            case 'empenhos':
+                await renderEmpenhosView(appMain);
+                break;
+            case 'admin':
+                await renderAdminView(appMain);
+                break;
+            default:
+                appMain.innerHTML = `<h1>Página não encontrada</h1>`;
+        }
+    }
 
-// ========================================================================
-    // 5. LÓGICA DAS VIEWS
-    // ========================================================================
-
-    /**
-     * Renderiza a view principal do Dashboard.
-     * @param {HTMLElement} container - O elemento <main> onde a view será renderizada.
-     */
+    // Lógica das views
     async function renderDashboardView(container) {
         try {
-            // Busca todos os dados do dashboard em paralelo para otimizar o carregamento
             const [kpis, avisos, graficoSecoesData] = await Promise.all([
                 fetchWithAuth('/dashboard/kpis'),
                 fetchWithAuth('/dashboard/avisos'),
@@ -155,8 +128,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     avisoTexto = `Vence em ${diffDays} dias (${prazo.toLocaleDateString('pt-BR')})`;
                 } else if (diffDays === 1) {
                     avisoTexto = `Vence amanhã (${prazo.toLocaleDateString('pt-BR')})!`;
+                } else if (diffDays < 0) {
+                    avisoTexto = `Venceu há ${Math.abs(diffDays)} dias (${prazo.toLocaleDateString('pt-BR')})!`;
                 } else {
-                    avisoTexto = `Venceu ou vence hoje (${prazo.toLocaleDateString('pt-BR')})!`;
+                    avisoTexto = `Vence hoje (${prazo.toLocaleDateString('pt-BR')})!`;
                 }
 
                 return `<div class="aviso-item"><strong>NC ${nc.numero_nc}:</strong> ${avisoTexto}</div>`;
@@ -194,19 +169,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
 
+            if (typeof Chart === 'undefined') {
+                console.error('Chart.js não carregado');
+                return;
+            }
             renderChart('grafico-secoes', graficoSecoesData.labels, graficoSecoesData.data);
-
         } catch (error) {
             container.innerHTML = `<div class="error-message">Não foi possível carregar os dados do dashboard: ${error.message}</div>`;
         }
     }
 
-    /**
-     * Função auxiliar para renderizar um gráfico usando Chart.js.
-     * @param {string} canvasId - O ID do elemento <canvas>.
-     * @param {string[]} labels - Os rótulos do eixo X.
-     * @param {number[]} data - Os valores do eixo Y.
-     */
     function renderChart(canvasId, labels, data) {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
@@ -226,25 +198,23 @@ document.addEventListener('DOMContentLoaded', () => {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                scales: { 
-                    y: { 
+                scales: {
+                    y: {
                         beginAtZero: true,
                         ticks: {
                             callback: function(value) {
                                 return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                             }
                         }
-                    } 
+                    }
                 },
-                plugins: { 
+                plugins: {
                     legend: { display: false },
                     tooltip: {
                         callbacks: {
                             label: function(context) {
                                 let label = context.dataset.label || '';
-                                if (label) {
-                                    label += ': ';
-                                }
+                                if (label) label += ': ';
                                 if (context.parsed.y !== null) {
                                     label += context.parsed.y.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                                 }
@@ -257,27 +227,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    /**
-     * ATUALIZAÇÃO da função navigateTo para incluir a nova view.
-     */
-    function navigateTo(view) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        switch (view) {
-            case 'dashboard':
-                renderDashboardView(appMain);
-                break;
-            // O conteúdo das outras views virá nas próximas partes
-            default:
-                appMain.innerHTML = `<h1>Página em construção</h1>`;
-        }
-    }
-
-// FIM DA PARTE 2 DE 7
-
-/**
-     * Renderiza a view de Notas de Crédito, incluindo filtros e a tabela.
-     * @param {HTMLElement} container - O elemento <main> onde a view será renderizada.
-     */
     async function renderNotasCreditoView(container) {
         container.innerHTML = `
             <div class="view-header">
@@ -329,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </table>
             </div>
         `;
-        
+
         await populateFilters();
         await loadAndRenderNotasTable();
 
@@ -343,17 +292,12 @@ document.addEventListener('DOMContentLoaded', () => {
             loadAndRenderNotasTable(filters);
         });
     }
-    
-    /**
-     * Busca os dados e popula os filtros em cascata
-     */
+
     async function populateFilters() {
         try {
-            // Se as seções já foram carregadas, não busca novamente.
             if (appState.secoes.length === 0) {
                 appState.secoes = await fetchWithAuth('/secoes');
             }
-            // Sempre busca as NCs para ter a lista mais atual de PIs e NDs
             const notasCredito = await fetchWithAuth('/notas-credito');
 
             const piSelect = document.getElementById('filter-pi');
@@ -364,18 +308,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const planosInternos = [...new Set(notasCredito.map(nc => nc.plano_interno))];
             const naturezasDespesa = [...new Set(notasCredito.map(nc => nc.nd))];
-            
+
             piSelect.innerHTML = '<option value="">Todos</option>' + planosInternos.sort().map(pi => `<option value="${pi}">${pi}</option>`).join('');
             ndSelect.innerHTML = '<option value="">Todas</option>' + naturezasDespesa.sort().map(nd => `<option value="${nd}">${nd}</option>`).join('');
-        } catch(error) {
+        } catch (error) {
             console.error("Erro ao popular filtros:", error);
         }
     }
 
-    /**
-     * Carrega as Notas de Crédito da API e renderiza a tabela.
-     * @param {object} filters - Um objeto com os filtros a serem aplicados.
-     */
     async function loadAndRenderNotasTable(filters = {}) {
         const tableBody = document.querySelector('#nc-table tbody');
         tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">Buscando dados...</td></tr>`;
@@ -386,7 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (value) params.append(key, value);
             });
             const queryString = params.toString();
-            
+
             const notas = await fetchWithAuth(`/notas-credito?${queryString}`);
             appState.notasCredito = notas;
 
@@ -418,132 +358,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-// FIM DA PARTE 3 DE 7
-
-// ========================================================================
-    // 6. LÓGICA DE MODAIS E FORMULÁRIOS
-    // ========================================================================
-
-    /**
-     * Abre um modal genérico na tela.
-     * @param {string} title - O título do modal.
-     * @param {string} contentHTML - O HTML para o corpo do modal.
-     * @param {function} onOpen - (Opcional) Callback a ser executado após o modal ser aberto.
-     */
-    function openModal(title, contentHTML, onOpen) {
-        const modalClone = modalTemplate.content.cloneNode(true);
-        const modalElement = modalClone.querySelector('.modal');
-        
-        modalClone.querySelector('.modal-title').textContent = title;
-        modalClone.querySelector('.modal-body').innerHTML = contentHTML;
-        
-        modalContainer.innerHTML = ''; // Limpa modais anteriores
-        modalContainer.appendChild(modalClone);
-        
-        const newModal = modalContainer.querySelector('.modal-backdrop');
-        newModal.addEventListener('click', (e) => { if (e.target === newModal) closeModal(); });
-        newModal.querySelector('.modal-close-btn').addEventListener('click', closeModal);
-
-        if (onOpen) onOpen(modalElement);
-    }
-
-    /**
-     * Fecha o modal atualmente aberto.
-     */
-    function closeModal() {
-        modalContainer.innerHTML = '';
-    }
-
-    /**
-     * Gera o HTML para o formulário de Nota de Crédito.
-     * @param {object} nc - (Opcional) Objeto NC para preencher o formulário para edição.
-     * @returns {string} HTML do formulário.
-     */
-    function getNotaCreditoFormHTML(nc = {}) {
-        const isEditing = !!nc.id;
-        const secoesOptions = appState.secoes.map(s => 
-            `<option value="${s.id}" ${s.id === nc.secao_responsavel_id ? 'selected' : ''}>${s.nome}</option>`
-        ).join('');
-
-        return `
-            <form id="nc-form" data-id="${isEditing ? nc.id : ''}">
-                <div class="form-grid">
-                    <div class="form-field"><label for="numero_nc">Número da NC</label><input type="text" name="numero_nc" value="${nc.numero_nc || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${nc.valor || ''}" required></div>
-                    <div class="form-field"><label for="secao_responsavel_id">Seção Responsável</label><select name="secao_responsavel_id" required>${secoesOptions}</select></div>
-                    <div class="form-field"><label for="plano_interno">Plano Interno</label><input type="text" name="plano_interno" value="${nc.plano_interno || ''}" required></div>
-                    <div class="form-field"><label for="nd">Natureza de Despesa</label><input type="text" name="nd" value="${nc.nd || ''}" required pattern="\\d{6}" title="Deve conter 6 dígitos numéricos."></div>
-                    <div class="form-field"><label for="ptres">PTRES</label><input type="text" name="ptres" value="${nc.ptres || ''}" required maxlength="6"></div>
-                    <div class="form-field"><label for="fonte">Fonte</label><input type="text" name="fonte" value="${nc.fonte || ''}" required maxlength="10"></div>
-                    <div class="form-field"><label for="esfera">Esfera</label><input type="text" name="esfera" value="${nc.esfera || ''}" required></div>
-                    <div class="form-field"><label for="data_chegada">Data de Chegada</label><input type="date" name="data_chegada" value="${nc.data_chegada || ''}" required></div>
-                    <div class="form-field"><label for="prazo_empenho">Prazo para Empenho</label><input type="date" name="prazo_empenho" value="${nc.prazo_empenho || ''}" required></div>
-                    <div class="form-field form-field-full"><label for="descricao">Descrição</label><textarea name="descricao">${nc.descricao || ''}</textarea></div>
-                </div>
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Nota de Crédito'}</button>
-                </div>
-            </form>
-        `;
-    }
-    
-    /**
-     * Manipula a submissão de um formulário de NC (criação ou edição).
-     */
-    async function handleNcFormSubmit(e) {
-        e.preventDefault();
-        const form = e.target;
-        const id = form.dataset.id;
-        const method = id ? 'PUT' : 'POST';
-        const endpoint = id ? `/notas-credito/${id}` : '/notas-credito';
-
-        const submitButton = form.querySelector('button[type="submit"]');
-        submitButton.disabled = true;
-
-        const formData = new FormData(form);
-        const data = Object.fromEntries(formData.entries());
-        data.valor = parseFloat(data.valor);
-        data.secao_responsavel_id = parseInt(data.secao_responsavel_id);
-
-        try {
-            await fetchWithAuth(endpoint, { method, body: JSON.stringify(data) });
-            closeModal();
-            const currentFilters = getCurrentFilters();
-            await loadAndRenderNotasTable(currentFilters); 
-        } catch (error) {
-            alert(`Erro ao salvar: ${error.message}`);
-            submitButton.disabled = false;
-        }
-    }
-
-    function getCurrentFilters() {
-        const view = document.querySelector('.tab-btn.active')?.dataset.view;
-        if (view === 'notasCredito') {
-            return {
-                plano_interno: document.getElementById('filter-pi')?.value,
-                nd: document.getElementById('filter-nd')?.value,
-                secao_responsavel_id: document.getElementById('filter-secao')?.value,
-                status: document.getElementById('filter-status')?.value,
-            };
-        }
-        return {};
-    }
-
-// FIM DA PARTE 4 DE 7
-
-// ========================================================================
-    // 8. LÓGICA DAS VIEWS RESTANTES
-    // ========================================================================
-
-    /**
-     * Renderiza a view de Empenhos.
-     * @param {HTMLElement} container - O elemento <main> onde a view será renderizada.
-     */
     async function renderEmpenhosView(container) {
         container.innerHTML = `
             <div class="view-header">
                 <h1>Gestão de Empenhos</h1>
-                </div>
+                <button id="add-empenho-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Adicionar Novo Empenho</button>
+            </div>
             <div class="table-container card">
                 <table id="empenhos-table">
                     <thead>
@@ -566,9 +386,6 @@ document.addEventListener('DOMContentLoaded', () => {
         await loadAndRenderEmpenhosTable();
     }
 
-    /**
-     * Carrega os Empenhos da API e renderiza a tabela.
-     */
     async function loadAndRenderEmpenhosTable() {
         const tableBody = document.querySelector('#empenhos-table tbody');
         tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Buscando dados...</td></tr>`;
@@ -578,7 +395,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 fetchWithAuth('/notas-credito'),
                 fetchWithAuth('/secoes')
             ]);
-            
+
             appState.empenhos = empenhos;
             const ncMap = new Map(notas.map(nc => [nc.id, nc.numero_nc]));
             const secoesMap = new Map(secoes.map(s => [s.id, s.nome]));
@@ -597,6 +414,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                     <td>${e.observacao || ''}</td>
                     <td class="actions">
+                        <button class="btn-icon" data-action="edit-empenho" title="Editar Empenho"><i class="fas fa-edit"></i></button>
                         ${currentUser.role === 'ADMINISTRADOR' ? 
                             `<button class="btn-icon btn-delete" data-action="delete-empenho" data-numero="${e.numero_ne}" title="Excluir Empenho"><i class="fas fa-trash"></i></button>` : ''}
                     </td>
@@ -607,10 +425,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-
-    /**
-     * Renderiza a view principal de Administração com suas sub-abas.
-     */
     async function renderAdminView(container, subView = 'secoes') {
         if (currentUser.role !== 'ADMINISTRADOR') {
             container.innerHTML = `<div class="error-message">Acesso negado. Esta área é restrita a administradores.</div>`;
@@ -638,14 +452,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderAdminSubView(adminContent, newSubView);
             }
         });
-        
+
         container.querySelector(`.sub-tab-btn[data-subview="${subView}"]`).classList.add('active');
         await renderAdminSubView(adminContent, subView);
     }
 
-    /**
-     * Roteador para o conteúdo da área de administração.
-     */
     async function renderAdminSubView(container, subView) {
         container.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
         switch (subView) {
@@ -656,9 +467,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Renderiza a interface para gerenciamento de seções.
-     */
     async function renderAdminSeçõesView(container) {
         container.innerHTML = `
             <h3>Gerenciar Seções</h3>
@@ -667,6 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <input type="hidden" name="id" value="">
                 <input type="text" name="nome" placeholder="Nome da seção" required>
                 <button type="submit" class="btn btn-primary">Adicionar Seção</button>
+                <button type="button" class="btn" id="cancel-secao-btn">Cancelar</button>
             </form>
             <div class="table-container" style="margin-top: 1.5rem;">
                 <table id="secoes-table">
@@ -677,11 +486,14 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
         await loadAndRenderSeçõesTable();
         container.querySelector('#secao-form').addEventListener('submit', handleSecaoFormSubmit);
+        container.querySelector('#cancel-secao-btn').addEventListener('click', () => {
+            const form = document.getElementById('secao-form');
+            form.reset();
+            form.querySelector('input[name="id"]').value = '';
+            form.querySelector('button[type="submit"]').textContent = 'Adicionar Seção';
+        });
     }
 
-    /**
-     * Renderiza a interface para gerenciamento de usuários.
-     */
     async function renderAdminUsersView(container) {
         container.innerHTML = `
             <h3>Gerenciar Usuários</h3>
@@ -707,11 +519,6 @@ document.addEventListener('DOMContentLoaded', () => {
         container.querySelector('#user-form').addEventListener('submit', handleUserFormSubmit);
     }
 
-// FIM DA PARTE 5 DE 7
-
-/**
-     * Carrega e renderiza a tabela de seções.
-     */
     async function loadAndRenderSeçõesTable() {
         const tableBody = document.querySelector('#secoes-table tbody');
         try {
@@ -733,14 +540,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    /**
-     * Manipula a submissão do formulário de seção (Adicionar/Editar).
-     */
     async function handleSecaoFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
         const id = form.id.value;
-        const nome = form.nome.value;
+        const nome = form.nome.value.trim();
         const method = id ? 'PUT' : 'POST';
         const endpoint = id ? `/secoes/${id}` : '/secoes';
 
@@ -750,14 +554,12 @@ document.addEventListener('DOMContentLoaded', () => {
             form.querySelector('input[name="id"]').value = '';
             form.querySelector('button[type="submit"]').textContent = 'Adicionar Seção';
             await loadAndRenderSeçõesTable();
+            appState.secoes = await fetchWithAuth('/secoes');
         } catch (error) {
             alert(`Erro ao salvar seção: ${error.message}`);
         }
     }
 
-    /**
-     * Carrega e renderiza a tabela de usuários.
-     */
     async function loadAndRenderUsersTable() {
         const tableBody = document.querySelector('#users-table tbody');
         try {
@@ -780,10 +582,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tableBody.innerHTML = `<tr><td colspan="5" class="error-message">Erro ao carregar usuários: ${error.message}</td></tr>`;
         }
     }
-    
-    /**
-     * Manipula a submissão do formulário de usuário (Adicionar).
-     */
+
     async function handleUserFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
@@ -793,22 +592,19 @@ document.addEventListener('DOMContentLoaded', () => {
             await fetchWithAuth('/users', { method: 'POST', body: JSON.stringify(data) });
             form.reset();
             await loadAndRenderUsersTable();
-        } catch (error)
-        {
+            appState.users = await fetchWithAuth('/users');
+        } catch (error) {
             alert(`Erro ao criar usuário: ${error.message}`);
         }
     }
 
-    /**
-     * Renderiza a interface para visualização dos logs de auditoria.
-     */
     async function renderAdminLogsView(container) {
         container.innerHTML = `
             <h3>Log de Auditoria</h3>
             <p>Registro de todas as ações importantes realizadas no sistema.</p>
             <div class="table-container" style="margin-top: 1.5rem;">
                 <table id="logs-table">
-                    <thead><tr><th>Data/Hora (UTC)</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead>
+                    <thead><tr><th>Data/Hora (Local)</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -820,7 +616,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
 
         let currentPage = 0;
-        const pageSize = 50; // Quantos logs por página
+        const pageSize = 50;
 
         const loadPage = (page) => {
             loadAndRenderAuditLogsTable(page, pageSize);
@@ -838,12 +634,9 @@ document.addEventListener('DOMContentLoaded', () => {
             loadPage(currentPage);
         });
 
-        loadPage(currentPage); // Carrega a primeira página
+        loadPage(currentPage);
     }
 
-    /**
-     * Carrega e renderiza a tabela de logs de auditoria com paginação.
-     */
     async function loadAndRenderAuditLogsTable(page = 0, limit = 50) {
         const tableBody = document.querySelector('#logs-table tbody');
         const pageInfo = document.getElementById('page-info');
@@ -873,19 +666,222 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${log.details || ''}</td>
                 </tr>
             `).join('');
-
         } catch (error) {
             tableBody.innerHTML = `<tr><td colspan="4" class="error-message">Erro ao carregar logs: ${error.message}</td></tr>`;
         }
     }
 
-// FIM DA PARTE 6 DE 7
+    function openModal(title, contentHTML, onOpen) {
+        const modalClone = modalTemplate.content.cloneNode(true);
+        const modalElement = modalClone.querySelector('.modal');
+        
+        modalClone.querySelector('.modal-title').textContent = title;
+        modalClone.querySelector('.modal-body').innerHTML = contentHTML;
+        
+        modalContainer.innerHTML = '';
+        modalContainer.appendChild(modalClone);
+        
+        const newModal = modalContainer.querySelector('.modal-backdrop');
+        newModal.addEventListener('click', (e) => { if (e.target === newModal) closeModal(); });
+        newModal.querySelector('.modal-close-btn').addEventListener('click', closeModal);
+        document.addEventListener('keydown', handleEscapeKey);
 
-// ========================================================================
-    // 7. MANIPULADOR DE EVENTOS GLOBAIS (Event Handlers)
-    // ========================================================================
+        if (onOpen) onOpen(modalElement);
+    }
 
-    // Delegação de eventos no container <main> para ações dinâmicas
+    function closeModal() {
+        modalContainer.innerHTML = '';
+        document.removeEventListener('keydown', handleEscapeKey);
+    }
+
+    function handleEscapeKey(e) {
+        if (e.key === 'Escape') closeModal();
+    }
+
+    function getNotaCreditoFormHTML(nc = {}) {
+        const isEditing = !!nc.id;
+        const secoesOptions = appState.secoes.map(s => 
+            `<option value="${s.id}" ${s.id === nc.secao_responsavel_id ? 'selected' : ''}>${s.nome}</option>`
+        ).join('');
+
+        return `
+            <form id="nc-form" data-id="${isEditing ? nc.id : ''}">
+                <div class="form-grid">
+                    <div class="form-field"><label for="numero_nc">Número da NC</label><input type="text" name="numero_nc" value="${nc.numero_nc || ''}" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${nc.valor || ''}" required></div>
+                    <div class="form-field"><label for="secao_responsavel_id">Seção Responsável</label><select name="secao_responsavel_id" required>${secoesOptions}</select></div>
+                    <div class="form-field"><label for="plano_interno">Plano Interno</label><input type="text" name="plano_interno" value="${nc.plano_interno || ''}" required></div>
+                    <div class="form-field"><label for="nd">Natureza de Despesa</label><input type="text" name="nd" value="${nc.nd || ''}" required pattern="\\d{6}" title="Deve conter 6 dígitos numéricos."></div>
+                    <div class="form-field"><label for="ptres">PTRES</label><input type="text" name="ptres" value="${nc.ptres || ''}" required maxlength="6"></div>
+                    <div class="form-field"><label for="fonte">Fonte</label><input type="text" name="fonte" value="${nc.fonte || ''}" required maxlength="10"></div>
+                    <div class="form-field"><label for="esfera">Esfera</label><input type="text" name="esfera" value="${nc.esfera || ''}" required></div>
+                    <div class="form-field"><label for="data_chegada">Data de Chegada</label><input type="date" name="data_chegada" value="${nc.data_chegada || ''}" required></div>
+                    <div class="form-field"><label for="prazo_empenho">Prazo para Empenho</label><input type="date" name="prazo_empenho" value="${nc.prazo_empenho || ''}" required></div>
+                    <div class="form-field form-field-full"><label for="descricao">Descrição</label><textarea name="descricao">${nc.descricao || ''}</textarea></div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Nota de Crédito'}</button>
+                    <button type="button" class="btn" onclick="document.dispatchEvent(new Event('closeModal'))">Cancelar</button>
+                </div>
+            </form>
+        `;
+    }
+
+    async function handleNcFormSubmit(e) {
+        e.preventDefault();
+        const form = e.target;
+        const id = form.dataset.id;
+        const method = id ? 'PUT' : 'POST';
+        const endpoint = id ? `/notas-credito/${id}` : '/notas-credito';
+
+        const submitButton = form.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+        data.valor = parseFloat(data.valor);
+        data.secao_responsavel_id = parseInt(data.secao_responsavel_id);
+
+        if (data.data_chegada && data.prazo_empenho && new Date(data.prazo_empenho) < new Date(data.data_chegada)) {
+            alert('Erro: O prazo para empenho não pode ser anterior à data de chegada.');
+            submitButton.disabled = false;
+            return;
+        }
+
+        try {
+            await fetchWithAuth(endpoint, { method, body: JSON.stringify(data) });
+            closeModal();
+            const currentFilters = getCurrentFilters();
+            await loadAndRenderNotasTable(currentFilters);
+            appState.notasCredito = await fetchWithAuth('/notas-credito');
+        } catch (error) {
+            alert(`Erro ao salvar: ${error.message}`);
+            submitButton.disabled = false;
+        }
+    }
+
+    function getCurrentFilters() {
+        const view = document.querySelector('.tab-btn.active')?.dataset.view;
+        if (view === 'notasCredito') {
+            return {
+                plano_interno: document.getElementById('filter-pi')?.value,
+                nd: document.getElementById('filter-nd')?.value,
+                secao_responsavel_id: document.getElementById('filter-secao')?.value,
+                status: document.getElementById('filter-status')?.value,
+            };
+        }
+        return {};
+    }
+
+    function getEmpenhoFormHTML(empenho = {}) {
+        const isEditing = !!empenho.id;
+        const notasOptions = appState.notasCredito.map(nc => 
+            `<option value="${nc.id}" ${nc.id === empenho.nota_credito_id ? 'selected' : ''}>${nc.numero_nc}</option>`
+        ).join('');
+        const secoesOptions = appState.secoes.map(s => 
+            `<option value="${s.id}" ${s.id === empenho.secao_requisitante_id ? 'selected' : ''}>${s.nome}</option>`
+        ).join('');
+
+        return `
+            <form id="empenho-form" data-id="${isEditing ? empenho.id : ''}">
+                <div class="form-grid">
+                    <div class="form-field"><label for="numero_ne">Número do Empenho</label><input type="text" name="numero_ne" value="${empenho.numero_ne || ''}" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${empenho.valor || ''}" required></div>
+                    <div class="form-field"><label for="nota_credito_id">Nota de Crédito</label><select name="nota_credito_id" required>${notasOptions}</select></div>
+                    <div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div>
+                    <div class="form-field"><label for="data_empenho">Data de Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div>
+                    <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao">${empenho.observacao || ''}</textarea></div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Empenho'}</button>
+                    <button type="button" class="btn" onclick="document.dispatchEvent(new Event('closeModal'))">Cancelar</button>
+                </div>
+            </form>
+        `;
+    }
+
+    async function handleEmpenhoFormSubmit(e) {
+        e.preventDefault();
+        const form = e.target;
+        const id = form.dataset.id;
+        const method = id ? 'PUT' : 'POST';
+        const endpoint = id ? `/empenhos/${id}` : '/empenhos';
+
+        const submitButton = form.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+        data.valor = parseFloat(data.valor);
+        data.nota_credito_id = parseInt(data.nota_credito_id);
+        data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
+
+        try {
+            await fetchWithAuth(endpoint, { method, body: JSON.stringify(data) });
+            closeModal();
+            await loadAndRenderEmpenhosTable();
+            appState.empenhos = await fetchWithAuth('/empenhos');
+        } catch (error) {
+            alert(`Erro ao salvar empenho: ${error.message}`);
+            submitButton.disabled = false;
+        }
+    }
+
+    async function renderExtratoNc(id) {
+        try {
+            const nc = await fetchWithAuth(`/notas-credito/${id}`);
+            const empenhos = await fetchWithAuth(`/empenhos?nota_credito_id=${id}`);
+            const recolhimentos = await fetchWithAuth(`/recolhimentos-saldo?nota_credito_id=${id}`);
+
+            const empenhosHTML = empenhos.length > 0 ? empenhos.map(e => `
+                <tr>
+                    <td>${e.numero_ne}</td>
+                    <td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                    <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                    <td>${e.observacao || ''}</td>
+                </tr>
+            `).join('') : '<tr><td colspan="4">Nenhum empenho associado.</td></tr>';
+
+            const recolhimentosHTML = recolhimentos.length > 0 ? recolhimentos.map(r => `
+                <tr>
+                    <td>${r.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                    <td>${new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                    <td>${r.observacao || ''}</td>
+                </tr>
+            `).join('') : '<tr><td colspan="3">Nenhum recolhimento registrado.</td></tr>';
+
+            const contentHTML = `
+                <h3>Detalhes da NC ${nc.numero_nc}</h3>
+                <p><strong>Plano Interno:</strong> ${nc.plano_interno}</p>
+                <p><strong>Natureza de Despesa:</strong> ${nc.nd}</p>
+                <p><strong>Seção:</strong> ${nc.secao_responsavel.nome}</p>
+                <p><strong>Valor Original:</strong> ${nc.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                <p><strong>Saldo Disponível:</strong> ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                <p><strong>Prazo:</strong> ${new Date(nc.prazo_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</p>
+                <p><strong>Status:</strong> ${nc.status}</p>
+                <h4>Empenhos Associados</h4>
+                <table>
+                    <thead>
+                        <tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr>
+                    </thead>
+                    <tbody>${empenhosHTML}</tbody>
+                </table>
+                <h4>Recolhimentos de Saldo</h4>
+                <table>
+                    <thead>
+                        <tr><th>Valor</th><th>Data</th><th>Observação</th></tr>
+                    </thead>
+                    <tbody>${recolhimentosHTML}</tbody>
+                </table>
+            `;
+
+            openModal(`Extrato da Nota de Crédito ${nc.numero_nc}`, contentHTML);
+        } catch (error) {
+            alert(`Erro ao carregar extrato: ${error.message}`);
+        }
+    }
+
+    // Manipulador de eventos globais
     appMain.addEventListener('click', async (e) => {
         const target = e.target.closest('button');
         if (!target) return;
@@ -893,15 +889,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const action = target.dataset.action;
         const id = target.closest('tr')?.dataset.id;
 
-        // --- Ação: Adicionar Nova NC ---
         if (target.id === 'add-nc-btn') {
             const formHTML = getNotaCreditoFormHTML();
             openModal('Adicionar Nova Nota de Crédito', formHTML, (modalElement) => {
                 modalElement.querySelector('#nc-form').addEventListener('submit', handleNcFormSubmit);
             });
         }
-        
-        // --- Ação: Editar NC ---
+
         if (action === 'edit-nc') {
             try {
                 const ncData = await fetchWithAuth(`/notas-credito/${id}`);
@@ -914,7 +908,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // --- Ação: Excluir NC ---
         if (action === 'delete-nc') {
             const numeroNc = target.dataset.numero;
             if (confirm(`Tem certeza que deseja excluir a Nota de Crédito "${numeroNc}"?\n\nEsta ação não pode ser desfeita.`)) {
@@ -922,13 +915,49 @@ document.addEventListener('DOMContentLoaded', () => {
                     await fetchWithAuth(`/notas-credito/${id}`, { method: 'DELETE' });
                     const currentFilters = getCurrentFilters();
                     await loadAndRenderNotasTable(currentFilters);
+                    appState.notasCredito = await fetchWithAuth('/notas-credito');
                 } catch (error) {
                     alert(`Erro ao excluir NC: ${error.message}`);
                 }
             }
         }
-        
-        // Ações da View de Administração - Seções
+
+        if (action === 'extrato-nc') {
+            await renderExtratoNc(id);
+        }
+
+        if (target.id === 'add-empenho-btn') {
+            const formHTML = getEmpenhoFormHTML();
+            openModal('Adicionar Novo Empenho', formHTML, (modalElement) => {
+                modalElement.querySelector('#empenho-form').addEventListener('submit', handleEmpenhoFormSubmit);
+            });
+        }
+
+        if (action === 'edit-empenho') {
+            try {
+                const empenhoData = await fetchWithAuth(`/empenhos/${id}`);
+                const formHTML = getEmpenhoFormHTML(empenhoData);
+                openModal(`Editar Empenho: ${empenhoData.numero_ne}`, formHTML, (modalElement) => {
+                    modalElement.querySelector('#empenho-form').addEventListener('submit', handleEmpenhoFormSubmit);
+                });
+            } catch (error) {
+                alert(`Erro ao buscar dados do empenho: ${error.message}`);
+            }
+        }
+
+        if (action === 'delete-empenho') {
+            const numeroNe = target.dataset.numero;
+            if (confirm(`Tem certeza que deseja excluir o Empenho "${numeroNe}"?`)) {
+                try {
+                    await fetchWithAuth(`/empenhos/${id}`, { method: 'DELETE' });
+                    await loadAndRenderEmpenhosTable();
+                    appState.empenhos = await fetchWithAuth('/empenhos');
+                } catch (error) {
+                    alert(`Erro ao excluir empenho: ${error.message}`);
+                }
+            }
+        }
+
         if (action === 'edit-secao') {
             const nome = target.dataset.nome;
             const form = document.getElementById('secao-form');
@@ -936,25 +965,27 @@ document.addEventListener('DOMContentLoaded', () => {
             form.nome.value = nome;
             form.querySelector('button[type="submit"]').textContent = 'Salvar Alterações';
         }
+
         if (action === 'delete-secao') {
             const nome = target.dataset.nome;
             if (confirm(`Tem certeza que deseja excluir a seção "${nome}"?`)) {
                 try {
                     await fetchWithAuth(`/secoes/${id}`, { method: 'DELETE' });
                     await loadAndRenderSeçõesTable();
+                    appState.secoes = await fetchWithAuth('/secoes');
                 } catch (error) {
                     alert(`Erro ao excluir seção: ${error.message}`);
                 }
             }
         }
 
-        // Ações da View de Administração - Usuários
         if (action === 'delete-user') {
             const username = target.dataset.username;
             if (confirm(`Tem certeza que deseja excluir o usuário "${username}"?`)) {
                 try {
                     await fetchWithAuth(`/users/${id}`, { method: 'DELETE' });
                     await loadAndRenderUsersTable();
+                    appState.users = await fetchWithAuth('/users');
                 } catch (error) {
                     alert(`Erro ao excluir usuário: ${error.message}`);
                 }
@@ -962,13 +993,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ========================================================================
-    // 9. INICIALIZAÇÃO DA APLICAÇÃO
-    // ========================================================================
-    
-    // Inicia todo o processo de verificação e renderização.
+    document.addEventListener('closeModal', closeModal);
+
     initApp();
 });
-
-// FIM DA PARTE 7 DE 7
-// O ARQUIVO main.js ESTÁ COMPLETO
