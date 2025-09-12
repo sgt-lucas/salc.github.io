@@ -210,6 +210,7 @@ class EmpenhoCreate(EmpenhoBase):
 
 class EmpenhoInDB(EmpenhoBase):
     id: int
+    nota_credito: NotaCreditoInDB # Exemplo de nesting para retornar dados completos
     class Config:
         from_attributes = True
 
@@ -234,6 +235,8 @@ class AuditLogInDB(BaseModel):
     class Config:
         from_attributes = True
 
+# FIM DA PARTE 1 DE 7
+
 # ==============================================================================
 # 5. UTILITÁRIOS E DEPENDÊNCIAS
 # ==============================================================================
@@ -246,43 +249,65 @@ def get_db():
         db.close()
 
 def create_audit_log(db: Session, user: User, action: str, details: str = ""):
+    """Cria e salva uma nova entrada no log de auditoria."""
     log_entry = AuditLog(username=user.username, action=action, details=details)
     db.add(log_entry)
 
 def verify_password(plain_password, hashed_password):
+    """Verifica se uma senha em texto plano corresponde a um hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password):
+    """Gera o hash de uma senha em texto plano."""
     return pwd_context.hash(password)
 
 def create_access_token(data: dict):
+    """Cria um novo token de acesso JWT."""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciais inválidas", headers={"WWW-Authenticate": "Bearer"})
+    """
+    Decodifica o token JWT e retorna o usuário correspondente do banco de dados.
+    Esta é a dependência base para garantir que um usuário está logado.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciais inválidas",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None: raise credentials_exception
-        token_data = TokenData(username=username)
+        if username is None:
+            raise credentials_exception
     except JWTError:
         raise credentials_exception
-    user = db.query(User).filter(User.username == token_data.username).first()
-    if user is None: raise credentials_exception
+    
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
     return user
 
 async def get_current_operator_user(current_user: User = Depends(get_current_user)):
+    """
+    Dependência que verifica se o usuário logado tem no mínimo o perfil de OPERADOR.
+    """
     if current_user.role not in [UserRole.OPERADOR, UserRole.ADMINISTRADOR]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação requer perfil de Operador ou superior.")
     return current_user
 
 async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    """
+    Dependência que verifica se o usuário logado tem o perfil de ADMINISTRADOR.
+    """
     if current_user.role != UserRole.ADMINISTRADOR:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ação requer perfil de Administrador.")
     return current_user
+
+# FIM DA PARTE 2 DE 7
 
 # ==============================================================================
 # 6. APLICAÇÃO FastAPI E EVENTO DE STARTUP
@@ -293,7 +318,7 @@ app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.0.0",
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Em produção, restrinja para o domínio do seu frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -344,7 +369,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-# FIM DA PARTE 1 DE 6
+# FIM DA PARTE 3 DE 7
 
 # ==============================================================================
 # 8. ENDPOINTS DE GERENCIAMENTO (ADMINISTRAÇÃO)
@@ -376,6 +401,25 @@ def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: Use
 @app.get("/users", response_model=List[UserInDB], summary="Lista todos os usuários (Apenas Admins)", tags=["Administração - Usuários"])
 def read_users(db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     return db.query(User).order_by(User.username).all()
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um usuário (Apenas Admins)", tags=["Administração - Usuários"])
+def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    if user_id == admin_user.id:
+        raise HTTPException(status_code=400, detail="Não é permitido excluir o próprio usuário.")
+    
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    try:
+        username = db_user.username
+        db.delete(db_user)
+        create_audit_log(db, admin_user, "EXCLUIR USUÁRIO", f"Usuário '{username}' (ID: {user_id}) foi excluído.")
+        db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
 # --- Seções ---
 @app.post("/secoes", response_model=SeçãoInDB, status_code=status.HTTP_201_CREATED, summary="Adiciona uma nova seção (Operadores e Admins)", tags=["Administração - Seções"])
@@ -439,7 +483,7 @@ def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user: User 
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
-# FIM DA PARTE 2 DE 6
+# FIM DA PARTE 4 DE 7
 
 # ==============================================================================
 # 9. ENDPOINTS DE NOTAS DE CRÉDITO (CORE BUSINESS)
@@ -465,7 +509,7 @@ def read_notas_credito(
     if secao_responsavel_id:
         query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status:
-        query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
+        query = query.filter(NotaCredito.status.ilike(f"%S{status}%"))
     if data_inicio:
         query = query.filter(NotaCredito.data_chegada >= data_inicio)
     if data_fim:
@@ -487,7 +531,6 @@ def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Seção responsável não encontrada.")
 
     try:
-        # Define o saldo inicial e o status no momento da criação
         db_nc = NotaCredito(**nc_in.dict(), saldo_disponivel=nc_in.valor, status="Ativa")
         db.add(db_nc)
         create_audit_log(db, current_user, "CRIAR NC", f"NC '{nc_in.numero_nc}' criada com valor R$ {nc_in.valor:,.2f} para a seção '{db_secao.nome}'.")
@@ -507,13 +550,11 @@ def update_nota_credito(nc_id: int, nc_update: NotaCreditoCreate, db: Session = 
     if not db_nc:
         raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
 
-    # A alteração do valor total da NC deve recalcular o saldo disponível
     valor_ja_empenhado = db_nc.valor - db_nc.saldo_disponivel
     novo_saldo = nc_update.valor - valor_ja_empenhado
-    if novo_saldo < -0.001: # Adicionar tolerância para erros de ponto flutuante
+    if novo_saldo < -0.001: 
         raise HTTPException(status_code=400, detail="O novo valor total é menor que o valor já empenhado nesta NC.")
 
-    # Atualiza os campos do objeto
     update_data = nc_update.dict()
     for key, value in update_data.items():
         setattr(db_nc, key, value)
@@ -538,7 +579,6 @@ def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: U
     if not db_nc:
         raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
 
-    # Regra de negócio: impede a exclusão de NC com empenhos vinculados
     if db_nc.empenhos:
         raise HTTPException(status_code=400, detail=f"Não é possível excluir a NC '{db_nc.numero_nc}', pois ela possui {len(db_nc.empenhos)} empenho(s) vinculado(s).")
     
@@ -552,7 +592,7 @@ def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: U
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
-# FIM DA PARTE 3 DE 6
+# FIM DA PARTE 5 DE 7
 
 # ==============================================================================
 # 10. ENDPOINTS DE LÓGICA FINANCEIRA (EMPENHOS, ANULAÇÕES, RECOLHIMENTOS)
@@ -575,113 +615,118 @@ def read_empenhos(
 
 @app.post("/empenhos", response_model=EmpenhoInDB, status_code=status.HTTP_201_CREATED, summary="Cadastra um novo Empenho", tags=["Empenhos"])
 def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
-    db_nc = db.query(NotaCredito).filter(NotaCredito.id == empenho_in.nota_credito_id).first()
-    if not db_nc:
-        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
-    if db_nc.status != "Ativa":
-        raise HTTPException(status_code=400, detail=f"Não é possível empenhar em uma NC com status '{db_nc.status}'.")
-    if empenho_in.valor > db_nc.saldo_disponivel:
-        raise HTTPException(status_code=400, detail=f"Valor do empenho (R$ {empenho_in.valor:,.2f}) excede o saldo disponível (R$ {db_nc.saldo_disponivel:,.2f}).")
-    
     try:
-        db_empenho = Empenho(**empenho_in.dict())
-        
-        db_nc.saldo_disponivel -= empenho_in.valor
-        if db_nc.saldo_disponivel <= 0.001: # Usar tolerância para ponto flutuante
-            db_nc.saldo_disponivel = 0
-            db_nc.status = "Totalmente Empenhada"
+        with db.begin_nested(): # Inicia uma transação
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == empenho_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if db_nc.status != "Ativa":
+                raise HTTPException(status_code=400, detail=f"Não é possível empenhar em uma NC com status '{db_nc.status}'.")
+            if empenho_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do empenho (R$ {empenho_in.valor:,.2f}) excede o saldo disponível (R$ {db_nc.saldo_disponivel:,.2f}).")
             
-        db.add(db_empenho)
-        create_audit_log(db, current_user, "CRIAR EMPENHO", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'. Saldo restante: R$ {db_nc.saldo_disponivel:,.2f}.")
+            db_empenho = Empenho(**empenho_in.dict())
+            
+            db_nc.saldo_disponivel -= empenho_in.valor
+            if db_nc.saldo_disponivel <= 0.001:
+                db_nc.saldo_disponivel = 0
+                db_nc.status = "Totalmente Empenhada"
+                
+            db.add(db_empenho)
+            create_audit_log(db, current_user, "CRIAR EMPENHO", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'. Saldo restante: R$ {db_nc.saldo_disponivel:,.2f}.")
         db.commit()
-        db.refresh(db_empenho)
-        return db_empenho
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=400, detail="Um Empenho com este número de NE já existe.")
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        raise e
+
+    db.refresh(db_empenho)
+    return db_empenho
 
 @app.delete("/empenhos/{empenho_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um Empenho (Apenas Admins)", tags=["Empenhos"])
 def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
-    if not db_empenho:
-        raise HTTPException(status_code=404, detail="Empenho não encontrado.")
-    
-    if db_empenho.anulacoes:
-        raise HTTPException(status_code=400, detail="Não é possível excluir empenho, pois ele possui anulações registradas. Estorne as anulações primeiro.")
-
     try:
-        db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).first()
-        
-        if db_nc:
-            db_nc.saldo_disponivel += db_empenho.valor
-            if db_nc.status == "Totalmente Empenhada":
-                db_nc.status = "Ativa"
-        
-        empenho_numero = db_empenho.numero_ne
-        nc_numero = db_nc.numero_nc if db_nc else "N/A"
-        
-        db.delete(db_empenho)
-        create_audit_log(db, admin_user, "EXCLUIR EMPENHO", f"Empenho '{empenho_numero}' (ID: {empenho_id}) foi excluído da NC '{nc_numero}'. Valor de R$ {db_empenho.valor:,.2f} devolvido ao saldo.")
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho não encontrado.")
+            
+            if db_empenho.anulacoes:
+                raise HTTPException(status_code=400, detail="Não é possível excluir empenho, pois ele possui anulações registradas. Estorne as anulações primeiro.")
+
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+            
+            if db_nc:
+                db_nc.saldo_disponivel += db_empenho.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+            
+            empenho_numero = db_empenho.numero_ne
+            nc_numero = db_nc.numero_nc if db_nc else "N/A"
+            
+            db.delete(db_empenho)
+            create_audit_log(db, admin_user, "EXCLUIR EMPENHO", f"Empenho '{empenho_numero}' (ID: {empenho_id}) foi excluído da NC '{nc_numero}'. Valor de R$ {db_empenho.valor:,.2f} devolvido ao saldo.")
         db.commit()
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        raise e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # --- Anulações e Recolhimentos ---
 @app.post("/anulacoes-empenho", summary="Registra uma Anulação de Empenho", tags=["Anulações e Recolhimentos"])
 def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
-    db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).first()
-    if not db_empenho:
-        raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
-    
-    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
-    saldo_empenho = db_empenho.valor - soma_anulacoes
-    if anulacao_in.valor > saldo_empenho:
-        raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
-
     try:
-        db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).first()
-        if db_nc:
-            db_nc.saldo_disponivel += anulacao_in.valor
-            if db_nc.status == "Totalmente Empenhada":
-                db_nc.status = "Ativa"
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).with_for_update().first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
+            
+            soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
+            saldo_empenho = db_empenho.valor - soma_anulacoes
+            if anulacao_in.valor > saldo_empenho:
+                raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
 
-        db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
-        db.add(db_anulacao)
-        create_audit_log(db, current_user, "CRIAR ANULAÇÃO", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'. Saldo devolvido para a NC '{db_nc.numero_nc if db_nc else 'N/A'}'.")
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+            if db_nc:
+                db_nc.saldo_disponivel += anulacao_in.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+
+            db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
+            db.add(db_anulacao)
+            create_audit_log(db, current_user, "CRIAR ANULAÇÃO", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'. Saldo devolvido para a NC '{db_nc.numero_nc if db_nc else 'N/A'}'.")
         db.commit()
-        return {"message": "Anulação registrada com sucesso."}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        raise e
+    return {"message": "Anulação registrada com sucesso."}
 
 @app.post("/recolhimentos-saldo", summary="Registra um Recolhimento de Saldo de uma NC", tags=["Anulações e Recolhimentos"])
 def create_recolhimento(recolhimento_in: RecolhimentoSaldoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_operator_user)):
-    db_nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento_in.nota_credito_id).first()
-    if not db_nc:
-        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
-    if recolhimento_in.valor > db_nc.saldo_disponivel:
-        raise HTTPException(status_code=400, detail=f"Valor do recolhimento (R$ {recolhimento_in.valor:,.2f}) excede o saldo disponível da NC (R$ {db_nc.saldo_disponivel:,.2f}).")
-
     try:
-        db_nc.saldo_disponivel -= recolhimento_in.valor
-        if db_nc.saldo_disponivel <= 0.001:
-            db_nc.saldo_disponivel = 0
-        
-        db_recolhimento = RecolhimentoSaldo(**recolhimento_in.dict())
-        db.add(db_recolhimento)
-        create_audit_log(db, current_user, "CRIAR RECOLHIMENTO", f"Recolhimento de saldo de R$ {recolhimento_in.valor:,.2f} da NC '{db_nc.numero_nc}'.")
+        with db.begin_nested():
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if recolhimento_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do recolhimento (R$ {recolhimento_in.valor:,.2f}) excede o saldo disponível da NC (R$ {db_nc.saldo_disponivel:,.2f}).")
+
+            db_nc.saldo_disponivel -= recolhimento_in.valor
+            if db_nc.saldo_disponivel <= 0.001:
+                db_nc.saldo_disponivel = 0
+            
+            db_recolhimento = RecolhimentoSaldo(**recolhimento_in.dict())
+            db.add(db_recolhimento)
+            create_audit_log(db, current_user, "CRIAR RECOLHIMENTO", f"Recolhimento de saldo de R$ {recolhimento_in.valor:,.2f} da NC '{db_nc.numero_nc}'.")
         db.commit()
-        return {"message": "Recolhimento registrado com sucesso."}
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        raise e
+    return {"message": "Recolhimento registrado com sucesso."}
 
-# FIM DA PARTE 4 DE 6
+# FIM DA PARTE 6 DE 7
 
 # ==============================================================================
 # 11. ENDPOINTS DE ANÁLISE (DASHBOARD E RELATÓRIOS)
@@ -696,7 +741,6 @@ class DashboardKPIs(BaseModel):
 
 @app.get("/dashboard/kpis", response_model=DashboardKPIs, summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
 def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Futuramente, os filtros podem ser aplicados a estas queries
     saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
     ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
     
@@ -752,38 +796,31 @@ def get_relatorio_pdf(
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
     styles = getSampleStyleSheet()
-    styles['h2'].alignment = 1 # Centralizado
-    styles['h1'].alignment = 1 # Centralizado
+    styles['h2'].alignment = 1
+    styles['h1'].alignment = 1
     styles['Normal'].fontSize = 8
     
     elements = []
 
-    # --- Cabeçalho ---
-    header_text = """
-    MINISTÉRIO DA DEFESA<br/>
-    EXÉRCITO BRASILEIRO<br/>
-    2º CENTRO DE GEOINFORMAÇÃO
-    """
+    header_text = "MINISTÉRIO DA DEFESA<br/>EXÉRCITO BRASILEIRO<br/>2º CENTRO DE GEOINFORMAÇÃO"
     elements.append(Paragraph(header_text, styles['h2']))
     elements.append(Spacer(1, 0.2*inch))
     
-    # Título Dinâmico
     titulo = "RELATÓRIO GERAL DE NOTAS DE CRÉDITO"
-    if plano_interno:
-        titulo = f"RELATÓRIO DE NCs DO PLANO INTERNO: {plano_interno}"
-    elif secao_responsavel_id:
+    # Lógica de Título Dinâmico
+    if secao_responsavel_id:
         secao = db.query(Seção).filter(Seção.id == secao_responsavel_id).first()
-        if secao:
-            titulo = f"RELATÓRIO DE NCs DA SEÇÃO: {secao.nome}"
-
+        if secao: titulo = f"RELATÓRIO DE NCs DA SEÇÃO: {secao.nome.upper()}"
+    elif plano_interno:
+        titulo = f"RELATÓRIO DE NCs DO PLANO INTERNO: {plano_interno.upper()}"
+    
     elements.append(Paragraph(titulo, styles['h1']))
     elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
     elements.append(Spacer(1, 0.25*inch))
 
-    # --- Conteúdo (Relatório Geral de Saldos com Filtros) ---
     query = db.query(NotaCredito).order_by(NotaCredito.plano_interno)
     
-    # Aplica os mesmos filtros do endpoint GET
+    # Aplicação de Filtros
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
@@ -793,9 +830,7 @@ def get_relatorio_pdf(
     
     ncs = query.all()
     
-    table_data = [
-        ["PI", "ND", "Nº da NC", "Seção", "Valor Original", "Saldo Disponível", "Status", "Prazo"]
-    ]
+    table_data = [["PI", "ND", "Nº da NC", "Seção", "Valor Original", "Saldo Disponível", "Status", "Prazo"]]
     for nc in ncs:
         table_data.append([
             nc.plano_interno, nc.nd, nc.numero_nc, nc.secao_responsavel.nome,
@@ -817,14 +852,11 @@ def get_relatorio_pdf(
     ]))
     
     elements.append(table)
-    
     doc.build(elements)
     buffer.seek(0)
     
-    headers = {'Content-Disposition': 'inline; filename="relatorio_notas_credito.pdf"'}
+    headers = {'Content-Disposition': 'inline; filename="relatorio.pdf"'}
     return Response(content=buffer.getvalue(), media_type='application/pdf', headers=headers)
-
-# FIM DA PARTE 5 DE 6
 
 # ==============================================================================
 # 12. ENDPOINT DE AUDITORIA
@@ -837,13 +869,8 @@ def read_audit_logs(
     db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
-    """
-    Retorna uma lista paginada de logs de auditoria, dos mais recentes para os mais antigos.
-    - **skip**: Número de registros a pular (para paginação).
-    - **limit**: Número máximo de registros a retornar.
-    """
     logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
     return logs
 
-# FIM DA PARTE 6 DE 6
+# FIM DA PARTE 7 DE 7
 # O ARQUIVO main.py ESTÁ COMPLETO
