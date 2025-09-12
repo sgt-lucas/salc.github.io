@@ -253,7 +253,7 @@ class NotaCreditoCreate(BaseModel):
     prazo_empenho: date
     descricao: Optional[str] = None
     secao_responsavel_id: int
-    saldo_disponivel: Optional[float] = Field(ge=0, default=None)  # Default to valor if None
+    saldo_disponivel: Optional[float] = Field(ge=0, default=None)
 
 class NotaCreditoInDB(BaseModel):
     id: int
@@ -404,11 +404,15 @@ async def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: U
 @app.post("/secoes/", response_model=SeçãoInDB, summary="Cria uma nova seção (Apenas Admins)")
 async def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_secao = Seção(nome=secao.nome)
-    db.add(db_secao)
-    db.commit()
-    db.refresh(db_secao)
-    log_audit_action(db, current_user.username, "SECAO_CREATED", f"Created section: {secao.nome}")
-    return db_secao
+    try:
+        db.add(db_secao)
+        db.commit()
+        db.refresh(db_secao)
+        log_audit_action(db, current_user.username, "SECAO_CREATED", f"Created section: {secao.nome}")
+        return db_secao
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Section name already exists")
 
 @app.get("/secoes/", response_model=List[SeçãoInDB])
 async def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -421,10 +425,14 @@ async def update_secao(secao_id: int, secao: SeçãoCreate, db: Session = Depend
     if not db_secao:
         raise HTTPException(status_code=404, detail="Section not found")
     db_secao.nome = secao.nome
-    db.commit()
-    db.refresh(db_secao)
-    log_audit_action(db, admin_user.username, "SECAO_UPDATED", f"Updated section ID {secao_id} to: {secao.nome}")
-    return db_secao
+    try:
+        db.commit()
+        db.refresh(db_secao)
+        log_audit_action(db, admin_user.username, "SECAO_UPDATED", f"Updated section ID {secao_id} to: {secao.nome}")
+        return db_secao
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Section name already exists")
 
 @app.delete("/secoes/{secao_id}", summary="Exclui uma seção (Apenas Admins)")
 async def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
@@ -445,14 +453,18 @@ async def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user:
 async def create_nota_credito(nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if nc.saldo_disponivel is None:
         nc.saldo_disponivel = nc.valor  # Inicializa saldo com o valor original
-    if new Date(nc.prazo_empenho) < nc.data_chegada:
+    if nc.prazo_empenho < nc.data_chegada:  # Correção da linha 448
         raise HTTPException(status_code=400, detail="Prazo para empenho não pode ser anterior à data de chegada")
     db_nc = NotaCredito(**nc.dict())
-    db.add(db_nc)
-    db.commit()
-    db.refresh(db_nc)
-    log_audit_action(db, current_user.username, "NC_CREATED", f"Created NC: {nc.numero_nc}")
-    return db_nc
+    try:
+        db.add(db_nc)
+        db.commit()
+        db.refresh(db_nc)
+        log_audit_action(db, current_user.username, "NC_CREATED", f"Created NC: {nc.numero_nc}")
+        return db_nc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Nota de crédito number already exists")
 
 @app.get("/notas-credito/", response_model=List[NotaCreditoInDB], summary="Lista notas de crédito com filtros opcionais")
 async def read_notas_credito(
@@ -475,19 +487,32 @@ async def read_notas_credito(
     notas = query.all()
     return notas
 
+@app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém uma nota de crédito por ID")
+async def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not nc:
+        raise HTTPException(status_code=404, detail="Nota de crédito not found")
+    return nc
+
 @app.put("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Atualiza uma nota de crédito")
 async def update_nota_credito(nc_id: int, nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
     if not db_nc:
         raise HTTPException(status_code=404, detail="Nota de crédito not found")
+    if nc.prazo_empenho < nc.data_chegada:
+        raise HTTPException(status_code=400, detail="Prazo para empenho não pode ser anterior à data de chegada")
     for key, value in nc.dict().items():
         setattr(db_nc, key, value)
     if nc.saldo_disponivel is None:
         db_nc.saldo_disponivel = db_nc.valor
-    db.commit()
-    db.refresh(db_nc)
-    log_audit_action(db, current_user.username, "NC_UPDATED", f"Updated NC ID {nc_id}")
-    return db_nc
+    try:
+        db.commit()
+        db.refresh(db_nc)
+        log_audit_action(db, current_user.username, "NC_UPDATED", f"Updated NC ID {nc_id}")
+        return db_nc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Nota de crédito number already exists")
 
 @app.delete("/notas-credito/{nc_id}", summary="Exclui uma nota de crédito (Apenas Admins)")
 async def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
@@ -508,17 +533,23 @@ async def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_u
 async def create_empenho(empenho: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     # Verifica se a NC existe e tem saldo suficiente
     nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
-    if not nc or nc.saldo_disponivel < empenho.valor:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente na NC ou NC não encontrada")
+    if not nc:
+        raise HTTPException(status_code=404, detail="Nota de crédito not found")
+    if nc.saldo_disponivel < empenho.valor:
+        raise HTTPException(status_code=400, detail="Saldo insuficiente na NC")
     db_empenho = Empenho(**empenho.dict())
     db.add(db_empenho)
     nc.saldo_disponivel -= empenho.valor
     if nc.saldo_disponivel <= 0:
         nc.status = "Totalmente Empenhada"
-    db.commit()
-    db.refresh(db_empenho)
-    log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Created empenho: {empenho.numero_ne} for NC {empenho.nota_credito_id}")
-    return db_empenho
+    try:
+        db.commit()
+        db.refresh(db_empenho)
+        log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Created empenho: {empenho.numero_ne} for NC {empenho.nota_credito_id}")
+        return db_empenho
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Empenho number already exists")
 
 @app.get("/empenhos/", response_model=List[EmpenhoInDB], summary="Lista empenhos (filtro por nota_credito_id opcional)")
 async def read_empenhos(
@@ -532,23 +563,39 @@ async def read_empenhos(
     empenhos = query.all()
     return empenhos
 
+@app.get("/empenhos/{empenho_id}", response_model=EmpenhoInDB, summary="Obtém um empenho por ID")
+async def read_empenho(empenho_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
+    if not empenho:
+        raise HTTPException(status_code=404, detail="Empenho not found")
+    return empenho
+
 @app.put("/empenhos/{empenho_id}", response_model=EmpenhoInDB, summary="Atualiza um empenho (Apenas Admins)")
 async def update_empenho(empenho_id: int, empenho: EmpenhoCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
     if not db_empenho:
         raise HTTPException(status_code=404, detail="Empenho not found")
-    # Lógica de update de saldo (simplificada - ajuste conforme necessário)
     old_valor = db_empenho.valor
-    db_empenho.valor = empenho.valor
-    nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).first()
-    if nc:
-        nc.saldo_disponivel += (old_valor - empenho.valor)
+    nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
+    if not nc:
+        raise HTTPException(status_code=404, detail="Nota de crédito not found")
+    if (nc.saldo_disponivel + old_valor) < empenho.valor:
+        raise HTTPException(status_code=400, detail="Saldo insuficiente na NC para o novo valor")
+    nc.saldo_disponivel = nc.saldo_disponivel + old_valor - empenho.valor
     for key, value in empenho.dict(exclude_unset=True).items():
         setattr(db_empenho, key, value)
-    db.commit()
-    db.refresh(db_empenho)
-    log_audit_action(db, admin_user.username, "EMPENHO_UPDATED", f"Updated empenho ID {empenho_id}")
-    return db_empenho
+    if nc.saldo_disponivel <= 0:
+        nc.status = "Totalmente Empenhada"
+    elif nc.status == "Totalmente Empenhada" and nc.saldo_disponivel > 0:
+        nc.status = "Ativa"
+    try:
+        db.commit()
+        db.refresh(db_empenho)
+        log_audit_action(db, admin_user.username, "EMPENHO_UPDATED", f"Updated empenho ID {empenho_id}")
+        return db_empenho
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Empenho number already exists")
 
 @app.delete("/empenhos/{empenho_id}", summary="Exclui um empenho (Apenas Admins)")
 async def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
@@ -567,7 +614,7 @@ async def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_u
     return {"detail": "Empenho deleted"}
 
 # ==============================================================================
-# 10. ENDPOINTS DE ANULAÇÕES E RECOLHIMENTOS (Exemplos Básicos)
+# 10. ENDPOINTS DE ANULAÇÕES E RECOLHIMENTOS
 # ==============================================================================
 
 @app.post("/anulacoes-empenho/", response_model=AnulacaoEmpenhoInDB, summary="Cria uma anulação de empenho")
@@ -577,10 +624,12 @@ async def create_anulacao(anulacao: AnulacaoEmpenhoCreate, db: Session = Depends
         raise HTTPException(status_code=400, detail="Empenho não encontrado ou valor de anulação inválido")
     db_anulacao = AnulacaoEmpenho(**anulacao.dict())
     db.add(db_anulacao)
-    empenho.valor -= anulacao.valor  # Ajusta valor do empenho
+    empenho.valor -= anulacao.valor
     nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
     if nc:
         nc.saldo_disponivel += anulacao.valor
+        if nc.status == "Totalmente Empenhada" and nc.saldo_disponivel > 0:
+            nc.status = "Ativa"
     db.commit()
     db.refresh(db_anulacao)
     log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Created anulação for empenho {anulacao.empenho_id}")
@@ -591,6 +640,8 @@ async def create_recolhimento(recolhimento: RecolhimentoSaldoCreate, db: Session
     nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento.nota_credito_id).first()
     if not nc:
         raise HTTPException(status_code=404, detail="Nota de crédito not found")
+    if nc.saldo_disponivel < recolhimento.valor:
+        raise HTTPException(status_code=400, detail="Saldo insuficiente para recolhimento")
     db_recolhimento = RecolhimentoSaldo(**recolhimento.dict())
     db.add(db_recolhimento)
     nc.saldo_disponivel -= recolhimento.valor
@@ -739,7 +790,7 @@ def get_relatorio_pdf(
 @app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria (Apenas Admins)")
 def read_audit_logs(
     skip: int = 0,
-    limit: int = 50,  # Reduzido para performance
+    limit: int = 50,
     db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
@@ -747,10 +798,9 @@ def read_audit_logs(
     return logs
 
 # ==============================================================================
-# 14. SEED DE USUÁRIO INICIAL (Execute uma vez localmente)
+# 14. SEED DE USUÁRIO INICIAL
 # ==============================================================================
 
-# Rode isso uma vez para criar o admin inicial (adicione ao final do arquivo e execute uvicorn uma vez)
 def create_first_admin():
     with SessionLocal() as db:
         if not db.query(User).filter(User.username == "admin").first():
@@ -761,4 +811,4 @@ def create_first_admin():
             print("Admin criado: username=admin, password=admin123")
 
 if __name__ == "__main__":
-    create_first_admin()  # Comente após a primeira execução
+    create_first_admin()
