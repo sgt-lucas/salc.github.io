@@ -1,7 +1,9 @@
 // main.js
+// Sistema de Gestão de Notas de Crédito - 2º CGEO
+// Implementa dashboard, notas de crédito, empenhos, administração, recolhimentos e relatórios
 document.addEventListener('DOMContentLoaded', () => {
     // Configuração inicial e estado da aplicação
-    const API_URL = 'https://salc.onrender.com';  // Atualize para o novo URL após migração
+    const API_URL = 'https://salc.onrender.com'; // Atualize para o URL do Railway após migração
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null;
     let appState = {
@@ -10,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
         empenhos: [],
         users: [],
         auditLogs: [],
+        anulacoes: [], // Adicionado para armazenar anulações
     };
 
     const appNav = document.getElementById('app-nav');
@@ -19,7 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalContainer = document.getElementById('modal-container');
     const modalTemplate = document.getElementById('modal-template');
 
-    // Função auxiliar para requisições à API
+    // Função auxiliar para requisições autenticadas à API
     async function fetchWithAuth(endpoint, options = {}) {
         const headers = {
             'Content-Type': 'application/json',
@@ -58,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Função de logout
     function logout() {
         localStorage.removeItem('accessToken');
         window.location.href = 'login.html';
@@ -87,6 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Navegação entre views
     async function navigateTo(view) {
         appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
         switch (view) {
@@ -120,12 +125,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (onOpenCallback) onOpenCallback(modalElement);
     }
 
+    // Função para fechar modais
     function closeModal() {
         modalContainer.classList.remove('active');
         modalContainer.innerHTML = '';
     }
 
-    // Lógica das views
+    // View do Dashboard
     async function renderDashboardView(container) {
         container.innerHTML = `
             <div class="view-header">
@@ -189,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('generate-report-btn').addEventListener('click', generateReport);
     }
 
+    // Popula os filtros do dashboard
     async function populateDashboardFilters() {
         try {
             if (appState.secoes.length === 0) {
@@ -199,9 +206,11 @@ document.addEventListener('DOMContentLoaded', () => {
             secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
         } catch (error) {
             console.error("Erro ao popular filtros do dashboard:", error);
+            alert('Erro ao carregar seções. Tente novamente.');
         }
     }
 
+    // Carrega dados do dashboard com filtros
     async function loadDashboardData() {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
@@ -248,14 +257,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (typeof Chart === 'undefined') {
                 console.error('Chart.js não carregado');
+                alert('Erro ao carregar gráfico. Verifique a conexão com Chart.js.');
                 return;
             }
             renderChart('grafico-secoes', graficoSecoesData.labels, graficoSecoesData.data);
         } catch (error) {
             console.error("Erro ao carregar dados do dashboard:", error);
+            document.getElementById('aviso-content').innerHTML = `<p>Erro ao carregar avisos: ${error.message}</p>`;
         }
     }
 
+    // Gera relatório PDF com filtros
     async function generateReport() {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
@@ -286,11 +298,13 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.appendChild(a);
             a.click();
             a.remove();
+            window.URL.revokeObjectURL(url);
         } catch (error) {
             alert(`Erro ao gerar relatório: ${error.message}`);
         }
     }
 
+    // View de Notas de Crédito
     async function renderNotasCreditoView(container) {
         try {
             if (appState.secoes.length === 0) {
@@ -365,6 +379,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Carrega notas de crédito com filtros
     async function loadNotasCredito() {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
@@ -404,12 +419,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Formulário para nota de crédito
     function getNotaCreditoFormHTML(nc = null) {
         return `
-            <form id="nc-form">
+            <form id="nc-form" ${nc ? `data-id="${nc.id}"` : ''}>
                 <div class="form-grid">
                     <div class="form-field"><label for="numero-nc">Nº da NC</label><input type="text" name="numero_nc" value="${nc?.numero_nc || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${nc?.valor || ''}" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0" value="${nc?.valor || ''}" required></div>
                     <div class="form-field"><label for="esfera">Esfera</label><input type="text" name="esfera" value="${nc?.esfera || ''}" required></div>
                     <div class="form-field"><label for="fonte">Fonte</label><input type="text" name="fonte" value="${nc?.fonte || ''}" required></div>
                     <div class="form-field"><label for="ptres">PTRES</label><input type="text" name="ptres" value="${nc?.ptres || ''}" required></div>
@@ -429,6 +445,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
+    // Manipula envio do formulário de nota de crédito
     async function handleNotaCreditoFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
@@ -436,6 +453,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = Object.fromEntries(formData.entries());
         data.valor = parseFloat(data.valor);
         data.secao_responsavel_id = parseInt(data.secao_responsavel_id);
+
+        // Validação no frontend
+        if (data.valor <= 0) {
+            alert('O valor deve ser maior que zero.');
+            return;
+        }
+        if (new Date(data.prazo_empenho) < new Date(data.data_chegada)) {
+            alert('O prazo para empenho não pode ser anterior à data de chegada.');
+            return;
+        }
 
         const method = form.dataset.id ? 'PUT' : 'POST';
         const url = form.dataset.id ? `/notas-credito/${form.dataset.id}` : '/notas-credito/';
@@ -449,6 +476,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Edita nota de crédito
     async function editNotaCredito(id) {
         const nc = appState.notasCredito.find(nc => nc.id === parseInt(id));
         if (!nc) return;
@@ -460,6 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Exclui nota de crédito
     async function deleteNotaCredito(id) {
         if (!confirm('Tem certeza que deseja excluir esta nota de crédito?')) return;
         try {
@@ -470,11 +499,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Exibe extrato da nota de crédito (com recolhimentos e anulações)
     async function renderExtratoNc(id) {
         try {
             const nc = await fetchWithAuth(`/notas-credito/${id}`);
             const empenhos = await fetchWithAuth(`/empenhos?nota_credito_id=${id}`);
             const recolhimentos = await fetchWithAuth(`/recolhimentos-saldo?nota_credito_id=${id}`);
+            const anulacoes = await fetchWithAuth(`/anulacoes-empenho?nota_credito_id=${id}`); // Adicionado para anulações
 
             const empenhosHTML = empenhos.length > 0 ? empenhos.map(e => `
                 <tr>
@@ -492,6 +523,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     <td>${r.observacao || ''}</td>
                 </tr>
             `).join('') : '<tr><td colspan="3">Nenhum recolhimento registrado.</td></tr>';
+
+            const anulacoesHTML = anulacoes.length > 0 ? anulacoes.map(a => `
+                <tr>
+                    <td>${appState.empenhos.find(e => e.id === a.empenho_id)?.numero_ne || 'N/A'}</td>
+                    <td>${a.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                    <td>${new Date(a.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
+                    <td>${a.observacao || ''}</td>
+                </tr>
+            `).join('') : '<tr><td colspan="4">Nenhuma anulação registrada.</td></tr>';
 
             const contentHTML = `
                 <h3>Detalhes da NC ${nc.numero_nc}</h3>
@@ -517,6 +557,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     </thead>
                     <tbody>${recolhimentosHTML}</tbody>
                 </table>
+                <h4>Anulações de Empenho</h4>
+                <button id="add-anulacao-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Adicionar Anulação</button>
+                <table>
+                    <thead>
+                        <tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr>
+                    </thead>
+                    <tbody>${anulacoesHTML}</tbody>
+                </table>
             `;
 
             openModal(`Extrato da Nota de Crédito ${nc.numero_nc}`, contentHTML, (modalElement) => {
@@ -526,17 +574,25 @@ document.addEventListener('DOMContentLoaded', () => {
                         modalElem.querySelector('#recolhimento-form').addEventListener('submit', (e) => handleRecolhimentoFormSubmit(e, id));
                     });
                 });
+                modalElement.querySelector('#add-anulacao-btn').addEventListener('click', () => {
+                    const formHTML = getAnulacaoFormHTML(id);
+                    openModal('Adicionar Anulação de Empenho', formHTML, (modalElem) => {
+                        modalElem.querySelector('#empenho-id').innerHTML = empenhos.map(e => `<option value="${e.id}">${e.numero_ne}</option>`).join('');
+                        modalElem.querySelector('#anulacao-form').addEventListener('submit', (e) => handleAnulacaoFormSubmit(e, id));
+                    });
+                });
             });
         } catch (error) {
             alert(`Erro ao carregar extrato: ${error.message}`);
         }
     }
 
+    // Formulário para recolhimento
     function getRecolhimentoFormHTML(ncId) {
         return `
             <form id="recolhimento-form">
                 <div class="form-grid">
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div>
                     <div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div>
                     <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div>
                 </div>
@@ -547,23 +603,70 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
+    // Manipula envio do formulário de recolhimento
     async function handleRecolhimentoFormSubmit(e, ncId) {
         e.preventDefault();
         const form = e.target;
         const formData = new FormData(form);
         const data = Object.fromEntries(formData.entries());
         data.valor = parseFloat(data.valor);
-        data.nota_credito_id = ncId;
+        data.nota_credito_id = parseInt(ncId);
+
+        if (data.valor <= 0) {
+            alert('O valor do recolhimento deve ser maior que zero.');
+            return;
+        }
 
         try {
             await fetchWithAuth('/recolhimentos-saldo/', { method: 'POST', body: JSON.stringify(data) });
             closeModal();
-            renderExtratoNc(ncId);  // Atualiza o extrato
+            renderExtratoNc(ncId); // Atualiza o extrato
         } catch (error) {
             alert(`Erro ao salvar recolhimento: ${error.message}`);
         }
     }
 
+    // Formulário para anulação de empenho
+    function getAnulacaoFormHTML(ncId) {
+        return `
+            <form id="anulacao-form">
+                <div class="form-grid">
+                    <div class="form-field"><label for="empenho-id">Empenho</label><select name="empenho_id" id="empenho-id" required></select></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div>
+                    <div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div>
+                    <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Criar Anulação</button>
+                </div>
+            </form>
+        `;
+    }
+
+    // Manipula envio do formulário de anulação
+    async function handleAnulacaoFormSubmit(e, ncId) {
+        e.preventDefault();
+        const form = e.target;
+        const formData = new FormData(form);
+        const data = Object.fromEntries(formData.entries());
+        data.valor = parseFloat(data.valor);
+        data.empenho_id = parseInt(data.empenho_id);
+
+        if (data.valor <= 0) {
+            alert('O valor da anulação deve ser maior que zero.');
+            return;
+        }
+
+        try {
+            await fetchWithAuth('/anulacoes-empenho/', { method: 'POST', body: JSON.stringify(data) });
+            closeModal();
+            renderExtratoNc(ncId); // Atualiza o extrato
+        } catch (error) {
+            alert(`Erro ao salvar anulação: ${error.message}`);
+        }
+    }
+
+    // View de Empenhos
     async function renderEmpenhosView(container) {
         try {
             if (appState.secoes.length === 0) {
@@ -611,6 +714,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Carrega empenhos
     async function loadEmpenhos() {
         try {
             appState.empenhos = await fetchWithAuth('/empenhos');
@@ -636,12 +740,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Formulário para empenho
     function getEmpenhoFormHTML(empenho = null) {
         return `
             <form id="empenho-form" ${empenho ? `data-id="${empenho.id}"` : ''}>
                 <div class="form-grid">
                     <div class="form-field"><label for="numero-ne">Nº do Empenho</label><input type="text" name="numero_ne" value="${empenho?.numero_ne || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${empenho?.valor || ''}" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${empenho?.valor || ''}" required></div>
                     <div class="form-field"><label for="data-empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho?.data_empenho || ''}" required></div>
                     <div class="form-field"><label for="nota-credito-id">Nota de Crédito</label>
                         <select name="nota_credito_id" id="nota-credito-id" required></select>
@@ -658,6 +763,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
+    // Manipula envio do formulário de empenho
     async function handleEmpenhoFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
@@ -666,6 +772,11 @@ document.addEventListener('DOMContentLoaded', () => {
         data.valor = parseFloat(data.valor);
         data.nota_credito_id = parseInt(data.nota_credito_id);
         data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
+
+        if (data.valor <= 0) {
+            alert('O valor do empenho deve ser maior que zero.');
+            return;
+        }
 
         const method = form.dataset.id ? 'PUT' : 'POST';
         const url = form.dataset.id ? `/empenhos/${form.dataset.id}` : '/empenhos/';
@@ -679,6 +790,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Edita empenho
     async function editEmpenho(id) {
         const empenho = appState.empenhos.find(e => e.id === parseInt(id));
         if (!empenho) return;
@@ -690,6 +802,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Exclui empenho
     async function deleteEmpenho(id) {
         if (!confirm('Tem certeza que deseja excluir este empenho?')) return;
         try {
@@ -700,6 +813,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // View de Administração
     async function renderAdminView(container) {
         try {
             if (appState.users.length === 0) {
@@ -772,6 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Carrega tabelas da administração
     function loadAdminTables() {
         const usersTbody = document.querySelector('#users-table tbody');
         usersTbody.innerHTML = appState.users.map(u => `
@@ -807,6 +922,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     }
 
+    // Renderiza gráfico com Chart.js
     function renderChart(canvasId, labels, data) {
         const ctx = document.getElementById(canvasId).getContext('2d');
         new Chart(ctx, {
@@ -841,5 +957,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Inicializa a aplicação
     initApp();
 });
