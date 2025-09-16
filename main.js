@@ -1,9 +1,5 @@
-// main.js
-// Sistema de Gestão de Notas de Crédito - 2º CGEO
-// Implementa dashboard, notas de crédito, empenhos, administração, recolhimentos e relatórios
 document.addEventListener('DOMContentLoaded', () => {
-    // Configuração inicial e estado da aplicação
-    const API_URL = 'https://salc.onrender.com'; // Atualize para o URL do Railway após migração
+    const API_URL = 'https://salc.onrender.com'; // Atualize para Railway
     const accessToken = localStorage.getItem('accessToken');
     let currentUser = null;
     let appState = {
@@ -12,7 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
         empenhos: [],
         users: [],
         auditLogs: [],
-        anulacoes: [], // Adicionado para armazenar anulações
+        anulacoes: [],
     };
 
     const appNav = document.getElementById('app-nav');
@@ -22,7 +18,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalContainer = document.getElementById('modal-container');
     const modalTemplate = document.getElementById('modal-template');
 
-    // Função auxiliar para requisições autenticadas à API
     async function fetchWithAuth(endpoint, options = {}) {
         const headers = {
             'Content-Type': 'application/json',
@@ -30,22 +25,22 @@ document.addEventListener('DOMContentLoaded', () => {
             ...options.headers,
         };
 
-        const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
-
-        if (response.status === 401) {
-            logout();
-            throw new Error('Sessão expirada. Por favor, faça login novamente.');
+        try {
+            const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
+            if (response.status === 401) {
+                logout();
+                throw new Error('Sessão expirada. Faça login novamente.');
+            }
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `Erro ${response.status}: Falha na requisição`);
+            }
+            return response.status === 204 ? null : response.json();
+        } catch (error) {
+            throw new Error(error.message || 'Erro desconhecido na requisição');
         }
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
-        }
-
-        return response.status === 204 ? null : response.json();
     }
 
-    // Inicialização e autenticação
     async function initApp() {
         if (!accessToken) {
             window.location.href = 'login.html';
@@ -53,21 +48,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         try {
             currentUser = await fetchWithAuth('/users/me');
+            appState.secoes = await fetchWithAuth('/secoes');
+            appState.notasCredito = await fetchWithAuth('/notas-credito?page=1&page_size=10');
+            appState.empenhos = await fetchWithAuth('/empenhos?page=1&page_size=10');
+            if (currentUser.role === 'ADMINISTRADOR') {
+                appState.users = await fetchWithAuth('/users');
+                appState.auditLogs = await fetchWithAuth('/audit-logs');
+            }
             renderLayout();
             await navigateTo('dashboard');
         } catch (error) {
-            console.error('Falha na autenticação ou inicialização:', error);
+            alert(`Erro na inicialização: ${error.message}`);
             logout();
         }
     }
 
-    // Função de logout
     function logout() {
         localStorage.removeItem('accessToken');
         window.location.href = 'login.html';
     }
 
-    // Renderização do layout e navegação
     function renderLayout() {
         usernameDisplay.textContent = `Usuário: ${currentUser.username} (${currentUser.role})`;
         logoutBtn.addEventListener('click', logout);
@@ -91,28 +91,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Navegação entre views
     async function navigateTo(view) {
         appMain.innerHTML = `<div class="loading-spinner"><p>Carregando...</p></div>`;
-        switch (view) {
-            case 'dashboard':
-                await renderDashboardView(appMain);
-                break;
-            case 'notasCredito':
-                await renderNotasCreditoView(appMain);
-                break;
-            case 'empenhos':
-                await renderEmpenhosView(appMain);
-                break;
-            case 'admin':
-                await renderAdminView(appMain);
-                break;
-            default:
-                appMain.innerHTML = `<h1>Página não encontrada</h1>`;
+        try {
+            switch (view) {
+                case 'dashboard':
+                    await renderDashboardView(appMain);
+                    break;
+                case 'notasCredito':
+                    await renderNotasCreditoView(appMain);
+                    break;
+                case 'empenhos':
+                    await renderEmpenhosView(appMain);
+                    break;
+                case 'admin':
+                    await renderAdminView(appMain);
+                    break;
+                default:
+                    appMain.innerHTML = `<h1>Página não encontrada</h1>`;
+            }
+        } catch (error) {
+            appMain.innerHTML = `<p class="error-message">Erro ao carregar página: ${error.message}</p>`;
         }
     }
 
-    // Função para abrir modais
     function openModal(title, contentHTML, onOpenCallback) {
         const modalClone = modalTemplate.content.cloneNode(true);
         const modalElement = modalClone.querySelector('.modal');
@@ -125,13 +127,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (onOpenCallback) onOpenCallback(modalElement);
     }
 
-    // Função para fechar modais
     function closeModal() {
         modalContainer.classList.remove('active');
         modalContainer.innerHTML = '';
     }
 
-    // View do Dashboard
     async function renderDashboardView(container) {
         container.innerHTML = `
             <div class="view-header">
@@ -180,37 +180,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 <h3><i class="fas fa-exclamation-triangle"></i> Avisos Importantes</h3>
                 <div id="aviso-content" class="aviso-content">Carregando...</div>
             </div>
-            <div class="card chart-card">
-                <h3>Saldo por Seção</h3>
-                <div class="chart-container">
-                    <canvas id="grafico-secoes"></canvas>
-                </div>
-            </div>
         `;
 
-        await populateDashboardFilters();
-        await loadDashboardData();
-
-        document.getElementById('apply-dashboard-filters-btn').addEventListener('click', loadDashboardData);
-        document.getElementById('generate-report-btn').addEventListener('click', generateReport);
-    }
-
-    // Popula os filtros do dashboard
-    async function populateDashboardFilters() {
         try {
-            if (appState.secoes.length === 0) {
-                appState.secoes = await fetchWithAuth('/secoes');
-            }
-
             const secaoSelect = document.getElementById('filter-secao');
             secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
+            await loadDashboardData();
+            document.getElementById('apply-dashboard-filters-btn').addEventListener('click', debounce(loadDashboardData, 300));
+            document.getElementById('generate-report-btn').addEventListener('click', generateReport);
         } catch (error) {
-            console.error("Erro ao popular filtros do dashboard:", error);
-            alert('Erro ao carregar seções. Tente novamente.');
+            container.innerHTML = `<p class="error-message">Erro ao carregar dashboard: ${error.message}</p>`;
         }
     }
 
-    // Carrega dados do dashboard com filtros
+    function debounce(func, wait) {
+        let timeout;
+        return function (...args) {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(this, args), wait);
+        };
+    }
+
     async function loadDashboardData() {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
@@ -222,10 +212,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const params = new URLSearchParams(filters).toString();
 
         try {
-            const [kpis, avisos, graficoSecoesData] = await Promise.all([
+            const [kpis, avisos] = await Promise.all([
                 fetchWithAuth('/dashboard/kpis?' + params),
                 fetchWithAuth('/dashboard/avisos?' + params),
-                fetchWithAuth('/dashboard/grafico-secoes?' + params)
             ]);
 
             document.getElementById('saldo-total').textContent = kpis.saldo_disponivel_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -238,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 hoje.setHours(0, 0, 0, 0);
                 const diffTime = prazo - hoje;
                 const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                
+
                 let avisoTexto;
                 if (diffDays > 1) {
                     avisoTexto = `Vence em ${diffDays} dias (${prazo.toLocaleDateString('pt-BR')})`;
@@ -254,20 +243,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }).join('') : '<p>Nenhum aviso no momento.</p>';
 
             document.getElementById('aviso-content').innerHTML = avisosHTML;
-
-            if (typeof Chart === 'undefined') {
-                console.error('Chart.js não carregado');
-                alert('Erro ao carregar gráfico. Verifique a conexão com Chart.js.');
-                return;
-            }
-            renderChart('grafico-secoes', graficoSecoesData.labels, graficoSecoesData.data);
         } catch (error) {
-            console.error("Erro ao carregar dados do dashboard:", error);
             document.getElementById('aviso-content').innerHTML = `<p>Erro ao carregar avisos: ${error.message}</p>`;
         }
     }
 
-    // Gera relatório PDF com filtros
     async function generateReport() {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
@@ -281,13 +261,12 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch(`${API_URL}/relatorios/pdf?${params}`, {
                 method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                }
+                headers: { 'Authorization': `Bearer ${accessToken}` },
             });
 
             if (!response.ok) {
-                throw new Error('Erro ao gerar relatório');
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Erro ao gerar relatório');
             }
 
             const blob = await response.blob();
@@ -304,67 +283,59 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // View de Notas de Crédito
     async function renderNotasCreditoView(container) {
+        container.innerHTML = `
+            <div class="view-header">
+                <h1>Notas de Crédito</h1>
+                <button id="add-nc-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Nova NC</button>
+            </div>
+            <div class="filters card">
+                <div class="filter-group">
+                    <label for="filter-pi">Plano Interno</label>
+                    <input type="text" id="filter-pi" placeholder="Filtrar por PI">
+                </div>
+                <div class="filter-group">
+                    <label for="filter-nd">Natureza de Despesa</label>
+                    <input type="text" id="filter-nd" placeholder="Filtrar por ND">
+                </div>
+                <div class="filter-group">
+                    <label for="filter-secao">Seção Responsável</label>
+                    <select id="filter-secao"><option value="">Todas</option></select>
+                </div>
+                <div class="filter-group">
+                    <label for="filter-status">Status</label>
+                    <select id="filter-status">
+                        <option value="">Todos</option>
+                        <option value="Ativa">Ativa</option>
+                        <option value="Totalmente Empenhada">Totalmente Empenhada</option>
+                        <option value="Expirada">Expirada</option>
+                    </select>
+                </div>
+                <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
+            </div>
+            <table id="ncs-table">
+                <thead>
+                    <tr>
+                        <th>Plano Interno</th>
+                        <th>ND</th>
+                        <th>Nº da NC</th>
+                        <th>Seção</th>
+                        <th>Valor</th>
+                        <th>Saldo Disponível</th>
+                        <th>Prazo</th>
+                        <th>Status</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        `;
+
         try {
-            if (appState.secoes.length === 0) {
-                appState.secoes = await fetchWithAuth('/secoes');
-            }
-            if (appState.notasCredito.length === 0) {
-                appState.notasCredito = await fetchWithAuth('/notas-credito');
-            }
-
-            container.innerHTML = `
-                <div class="view-header">
-                    <h1>Notas de Crédito</h1>
-                    <button id="add-nc-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Nova NC</button>
-                </div>
-                <div class="filters card">
-                    <div class="filter-group">
-                        <label for="filter-pi">Plano Interno</label>
-                        <input type="text" id="filter-pi" placeholder="Filtrar por PI">
-                    </div>
-                    <div class="filter-group">
-                        <label for="filter-nd">Natureza de Despesa</label>
-                        <input type="text" id="filter-nd" placeholder="Filtrar por ND">
-                    </div>
-                    <div class="filter-group">
-                        <label for="filter-secao">Seção Responsável</label>
-                        <select id="filter-secao"><option value="">Todas</option></select>
-                    </div>
-                    <div class="filter-group">
-                        <label for="filter-status">Status</label>
-                        <select id="filter-status">
-                            <option value="">Todos</option>
-                            <option value="Ativa">Ativa</option>
-                            <option value="Totalmente Empenhada">Totalmente Empenhada</option>
-                            <option value="Expirada">Expirada</option>
-                        </select>
-                    </div>
-                    <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
-                </div>
-                <table id="ncs-table">
-                    <thead>
-                        <tr>
-                            <th>Plano Interno</th>
-                            <th>ND</th>
-                            <th>Nº da NC</th>
-                            <th>Seção</th>
-                            <th>Valor</th>
-                            <th>Saldo Disponível</th>
-                            <th>Prazo</th>
-                            <th>Status</th>
-                            <th>Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            `;
-
             const secaoSelect = document.getElementById('filter-secao');
             secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
-
-            document.getElementById('apply-filters-btn').addEventListener('click', loadNotasCredito);
+            await loadNotasCredito();
+            document.getElementById('apply-filters-btn').addEventListener('click', debounce(loadNotasCredito, 300));
             document.getElementById('add-nc-btn').addEventListener('click', () => {
                 const formHTML = getNotaCreditoFormHTML();
                 openModal('Nova Nota de Crédito', formHTML, (modalElement) => {
@@ -372,27 +343,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     modalElement.querySelector('#nc-form').addEventListener('submit', handleNotaCreditoFormSubmit);
                 });
             });
-
-            await loadNotasCredito();
         } catch (error) {
             container.innerHTML = `<p class="error-message">Erro ao carregar notas de crédito: ${error.message}</p>`;
         }
     }
 
-    // Carrega notas de crédito com filtros
-    async function loadNotasCredito() {
+    async function loadNotasCredito(page = 1, pageSize = 10) {
         const filters = {
             plano_interno: document.getElementById('filter-pi').value,
             nd: document.getElementById('filter-nd').value,
             secao_responsavel_id: document.getElementById('filter-secao').value,
             status: document.getElementById('filter-status').value,
+            page,
+            page_size: pageSize,
         };
 
         const params = new URLSearchParams(filters).toString();
+        const tbody = document.querySelector('#ncs-table tbody');
 
         try {
             appState.notasCredito = await fetchWithAuth(`/notas-credito?${params}`);
-            const tbody = document.querySelector('#ncs-table tbody');
             tbody.innerHTML = appState.notasCredito.map(nc => `
                 <tr>
                     <td>${nc.plano_interno}</td>
@@ -415,17 +385,16 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.edit-btn').forEach(btn => btn.addEventListener('click', () => editNotaCredito(btn.dataset.id)));
             document.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', () => deleteNotaCredito(btn.dataset.id)));
         } catch (error) {
-            document.querySelector('#ncs-table tbody').innerHTML = `<tr><td colspan="9">Erro ao carregar: ${error.message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="9">Erro ao carregar: ${error.message}</td></tr>`;
         }
     }
 
-    // Formulário para nota de crédito
     function getNotaCreditoFormHTML(nc = null) {
         return `
             <form id="nc-form" ${nc ? `data-id="${nc.id}"` : ''}>
                 <div class="form-grid">
                     <div class="form-field"><label for="numero-nc">Nº da NC</label><input type="text" name="numero_nc" value="${nc?.numero_nc || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0" value="${nc?.valor || ''}" required></div>
+                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${nc?.valor || ''}" required></div>
                     <div class="form-field"><label for="esfera">Esfera</label><input type="text" name="esfera" value="${nc?.esfera || ''}" required></div>
                     <div class="form-field"><label for="fonte">Fonte</label><input type="text" name="fonte" value="${nc?.fonte || ''}" required></div>
                     <div class="form-field"><label for="ptres">PTRES</label><input type="text" name="ptres" value="${nc?.ptres || ''}" required></div>
@@ -445,7 +414,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    // Manipula envio do formulário de nota de crédito
     async function handleNotaCreditoFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
@@ -454,7 +422,6 @@ document.addEventListener('DOMContentLoaded', () => {
         data.valor = parseFloat(data.valor);
         data.secao_responsavel_id = parseInt(data.secao_responsavel_id);
 
-        // Validação no frontend
         if (data.valor <= 0) {
             alert('O valor deve ser maior que zero.');
             return;
@@ -476,7 +443,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Edita nota de crédito
     async function editNotaCredito(id) {
         const nc = appState.notasCredito.find(nc => nc.id === parseInt(id));
         if (!nc) return;
@@ -488,7 +454,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Exclui nota de crédito
     async function deleteNotaCredito(id) {
         if (!confirm('Tem certeza que deseja excluir esta nota de crédito?')) return;
         try {
@@ -499,13 +464,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Exibe extrato da nota de crédito (com recolhimentos e anulações)
     async function renderExtratoNc(id) {
         try {
             const nc = await fetchWithAuth(`/notas-credito/${id}`);
-            const empenhos = await fetchWithAuth(`/empenhos?nota_credito_id=${id}`);
+            const empenhos = await fetchWithAuth(`/empenhos?nota_credito_id=${id}&page=1&page_size=10`);
             const recolhimentos = await fetchWithAuth(`/recolhimentos-saldo?nota_credito_id=${id}`);
-            const anulacoes = await fetchWithAuth(`/anulacoes-empenho?nota_credito_id=${id}`); // Adicionado para anulações
+            const anulacoes = await fetchWithAuth(`/anulacoes-empenho?nota_credito_id=${id}`);
 
             const empenhosHTML = empenhos.length > 0 ? empenhos.map(e => `
                 <tr>
@@ -587,7 +551,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Formulário para recolhimento
     function getRecolhimentoFormHTML(ncId) {
         return `
             <form id="recolhimento-form">
@@ -603,7 +566,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    // Manipula envio do formulário de recolhimento
     async function handleRecolhimentoFormSubmit(e, ncId) {
         e.preventDefault();
         const form = e.target;
@@ -620,13 +582,12 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             await fetchWithAuth('/recolhimentos-saldo/', { method: 'POST', body: JSON.stringify(data) });
             closeModal();
-            renderExtratoNc(ncId); // Atualiza o extrato
+            await renderExtratoNc(ncId);
         } catch (error) {
             alert(`Erro ao salvar recolhimento: ${error.message}`);
         }
     }
 
-    // Formulário para anulação de empenho
     function getAnulacaoFormHTML(ncId) {
         return `
             <form id="anulacao-form">
@@ -643,7 +604,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    // Manipula envio do formulário de anulação
     async function handleAnulacaoFormSubmit(e, ncId) {
         e.preventDefault();
         const form = e.target;
@@ -660,45 +620,35 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             await fetchWithAuth('/anulacoes-empenho/', { method: 'POST', body: JSON.stringify(data) });
             closeModal();
-            renderExtratoNc(ncId); // Atualiza o extrato
+            await renderExtratoNc(ncId);
         } catch (error) {
             alert(`Erro ao salvar anulação: ${error.message}`);
         }
     }
 
-    // View de Empenhos
     async function renderEmpenhosView(container) {
+        container.innerHTML = `
+            <div class="view-header">
+                <h1>Empenhos</h1>
+                <button id="add-empenho-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Empenho</button>
+            </div>
+            <table id="empenhos-table">
+                <thead>
+                    <tr>
+                        <th>Nº do Empenho</th>
+                        <th>NC</th>
+                        <th>Seção Requisitante</th>
+                        <th>Valor</th>
+                        <th>Data</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        `;
+
         try {
-            if (appState.secoes.length === 0) {
-                appState.secoes = await fetchWithAuth('/secoes');
-            }
-            if (appState.notasCredito.length === 0) {
-                appState.notasCredito = await fetchWithAuth('/notas-credito');
-            }
-            if (appState.empenhos.length === 0) {
-                appState.empenhos = await fetchWithAuth('/empenhos');
-            }
-
-            container.innerHTML = `
-                <div class="view-header">
-                    <h1>Empenhos</h1>
-                    <button id="add-empenho-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Empenho</button>
-                </div>
-                <table id="empenhos-table">
-                    <thead>
-                        <tr>
-                            <th>Nº do Empenho</th>
-                            <th>NC</th>
-                            <th>Seção Requisitante</th>
-                            <th>Valor</th>
-                            <th>Data</th>
-                            <th>Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            `;
-
+            await loadEmpenhos();
             document.getElementById('add-empenho-btn').addEventListener('click', () => {
                 const formHTML = getEmpenhoFormHTML();
                 openModal('Novo Empenho', formHTML, (modalElement) => {
@@ -707,17 +657,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     modalElement.querySelector('#empenho-form').addEventListener('submit', handleEmpenhoFormSubmit);
                 });
             });
-
-            await loadEmpenhos();
         } catch (error) {
             container.innerHTML = `<p class="error-message">Erro ao carregar empenhos: ${error.message}</p>`;
         }
     }
 
-    // Carrega empenhos
-    async function loadEmpenhos() {
+    async function loadEmpenhos(page = 1, pageSize = 10) {
         try {
-            appState.empenhos = await fetchWithAuth('/empenhos');
+            appState.empenhos = await fetchWithAuth(`/empenhos?page=${page}&page_size=${pageSize}`);
             const tbody = document.querySelector('#empenhos-table tbody');
             tbody.innerHTML = appState.empenhos.map(e => `
                 <tr>
@@ -740,7 +687,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Formulário para empenho
     function getEmpenhoFormHTML(empenho = null) {
         return `
             <form id="empenho-form" ${empenho ? `data-id="${empenho.id}"` : ''}>
@@ -763,7 +709,6 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
     }
 
-    // Manipula envio do formulário de empenho
     async function handleEmpenhoFormSubmit(e) {
         e.preventDefault();
         const form = e.target;
@@ -790,7 +735,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Edita empenho
     async function editEmpenho(id) {
         const empenho = appState.empenhos.find(e => e.id === parseInt(id));
         if (!empenho) return;
@@ -802,7 +746,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Exclui empenho
     async function deleteEmpenho(id) {
         if (!confirm('Tem certeza que deseja excluir este empenho?')) return;
         try {
@@ -813,37 +756,30 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // View de Administração
     async function renderAdminView(container) {
+        container.innerHTML = `
+            <div class="view-header">
+                <h1>Administração</h1>
+                <button id="add-user-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Usuário</button>
+            </div>
+            <h2>Usuários</h2>
+            <table id="users-table">
+                <thead>
+                    <tr><th>Username</th><th>Email</th><th>Função</th><th>Ações</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <h2>Log de Auditoria</h2>
+            <table id="audit-table">
+                <thead>
+                    <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        `;
+
         try {
-            if (appState.users.length === 0) {
-                appState.users = await fetchWithAuth('/users');
-            }
-            if (appState.auditLogs.length === 0) {
-                appState.auditLogs = await fetchWithAuth('/audit-logs');
-            }
-
-            container.innerHTML = `
-                <div class="view-header">
-                    <h1>Administração</h1>
-                    <button id="add-user-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Usuário</button>
-                </div>
-                <h2>Usuários</h2>
-                <table id="users-table">
-                    <thead>
-                        <tr><th>Username</th><th>Email</th><th>Função</th><th>Ações</th></tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-                <h2>Log de Auditoria</h2>
-                <table id="audit-table">
-                    <thead>
-                        <tr><th>Data/Hora</th><th>Usuário</th><th>Ação</th><th>Detalhes</th></tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            `;
-
+            loadAdminTables();
             document.getElementById('add-user-btn').addEventListener('click', () => {
                 const formHTML = `
                     <form id="user-form">
@@ -879,14 +815,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     });
                 });
             });
-
-            loadAdminTables();
         } catch (error) {
             container.innerHTML = `<p class="error-message">Erro ao carregar administração: ${error.message}</p>`;
         }
     }
 
-    // Carrega tabelas da administração
     function loadAdminTables() {
         const usersTbody = document.querySelector('#users-table tbody');
         usersTbody.innerHTML = appState.users.map(u => `
@@ -922,41 +855,5 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     }
 
-    // Renderiza gráfico com Chart.js
-    function renderChart(canvasId, labels, data) {
-        const ctx = document.getElementById(canvasId).getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Saldo Disponível (R$)',
-                    data: data,
-                    backgroundColor: 'rgba(0, 51, 102, 0.6)',
-                    borderColor: 'rgba(0, 51, 102, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        ticks: {
-                            callback: function(value) {
-                                return 'R$ ' + value.toLocaleString('pt-BR');
-                            }
-                        }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                }
-            }
-        });
-    }
-
-    // Inicializa a aplicação
     initApp();
 });
