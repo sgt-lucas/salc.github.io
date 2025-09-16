@@ -24,10 +24,6 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
-# ==============================================================================
-# 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA
-# ==============================================================================
-
 app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.0.0")
 
 app.add_middleware(
@@ -48,10 +44,6 @@ if SECRET_KEY is None:
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# ==============================================================================
-# 2. CONFIGURAÇÃO DO BANCO DE DADOS
-# ==============================================================================
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL is None:
     raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
@@ -64,10 +56,6 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
-
-# ==============================================================================
-# 3. MODELOS DO BANCO DE DADOS (SQLAlchemy)
-# ==============================================================================
 
 class UserRole(str, enum.Enum):
     OPERADOR = "OPERADOR"
@@ -153,10 +141,6 @@ class AuditLog(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# ==============================================================================
-# 4. FUNÇÕES DE SEGURANÇA E UTILITÁRIOS
-# ==============================================================================
-
 def get_db():
     db = SessionLocal()
     try:
@@ -207,10 +191,6 @@ def log_audit_action(db: Session, username: str, action: str, details: str = Non
     log = AuditLog(username=username, action=action, details=details)
     db.add(log)
     db.commit()
-
-# ==============================================================================
-# 5. MODELOS Pydantic
-# ==============================================================================
 
 class UserCreate(BaseModel):
     username: str
@@ -341,10 +321,6 @@ class GraficoData(BaseModel):
     labels: List[str]
     data: List[float]
 
-# ==============================================================================
-# 6. ENDPOINTS DE USUÁRIOS E AUTENTICAÇÃO
-# ==============================================================================
-
 @app.post("/token", response_model=Token)
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
@@ -397,10 +373,6 @@ async def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: U
     log_audit_action(db, admin_user.username, "USER_DELETED", f"Deleted user: {username}")
     return {"detail": "User deleted"}
 
-# ==============================================================================
-# 7. ENDPOINTS DE SEÇÕES
-# ==============================================================================
-
 @app.post("/secoes/", response_model=SeçãoInDB, summary="Cria uma nova seção (Apenas Admins)")
 async def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_secao = Seção(nome=secao.nome)
@@ -445,15 +417,11 @@ async def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user:
     log_audit_action(db, admin_user.username, "SECAO_DELETED", f"Deleted section: {nome}")
     return {"detail": "Section deleted"}
 
-# ==============================================================================
-# 8. ENDPOINTS DE NOTAS DE CRÉDITO
-# ==============================================================================
-
 @app.post("/notas-credito/", response_model=NotaCreditoInDB, summary="Cria uma nova nota de crédito")
 async def create_nota_credito(nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if nc.saldo_disponivel is None:
-        nc.saldo_disponivel = nc.valor  # Inicializa saldo com o valor original
-    if nc.prazo_empenho < nc.data_chegada:  # Correção da linha 448
+        nc.saldo_disponivel = nc.valor
+    if nc.prazo_empenho < nc.data_chegada:
         raise HTTPException(status_code=400, detail="Prazo para empenho não pode ser anterior à data de chegada")
     db_nc = NotaCredito(**nc.dict())
     try:
@@ -472,10 +440,12 @@ async def read_notas_credito(
     nd: Optional[str] = Query(None),
     secao_responsavel_id: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    query = db.query(NotaCredito)
+    query = db.query(NotaCredito).join(Seção, NotaCredito.secao_responsavel_id == Seção.id)
     if plano_interno:
         query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd:
@@ -483,7 +453,8 @@ async def read_notas_credito(
     if secao_responsavel_id:
         query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status:
-        query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
+        query = query.filter(NotaCredito.status == status)
+    query = query.offset((page - 1) * page_size).limit(page_size)
     notas = query.all()
     return notas
 
@@ -525,13 +496,8 @@ async def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_u
     log_audit_action(db, admin_user.username, "NC_DELETED", f"Deleted NC: {numero_nc}")
     return {"detail": "Nota de crédito deleted"}
 
-# ==============================================================================
-# 9. ENDPOINTS DE EMPENHOS
-# ==============================================================================
-
 @app.post("/empenhos/", response_model=EmpenhoInDB, summary="Cria um novo empenho")
 async def create_empenho(empenho: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    # Verifica se a NC existe e tem saldo suficiente
     nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
     if not nc:
         raise HTTPException(status_code=404, detail="Nota de crédito not found")
@@ -554,12 +520,15 @@ async def create_empenho(empenho: EmpenhoCreate, db: Session = Depends(get_db), 
 @app.get("/empenhos/", response_model=List[EmpenhoInDB], summary="Lista empenhos (filtro por nota_credito_id opcional)")
 async def read_empenhos(
     nota_credito_id: Optional[int] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     query = db.query(Empenho)
     if nota_credito_id:
         query = query.filter(Empenho.nota_credito_id == nota_credito_id)
+    query = query.offset((page - 1) * page_size).limit(page_size)
     empenhos = query.all()
     return empenhos
 
@@ -613,10 +582,6 @@ async def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_u
     log_audit_action(db, admin_user.username, "EMPENHO_DELETED", f"Deleted empenho: {numero_ne}")
     return {"detail": "Empenho deleted"}
 
-# ==============================================================================
-# 10. ENDPOINTS DE ANULAÇÕES E RECOLHIMENTOS
-# ==============================================================================
-
 @app.post("/anulacoes-empenho/", response_model=AnulacaoEmpenhoInDB, summary="Cria uma anulação de empenho")
 async def create_anulacao(anulacao: AnulacaoEmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     empenho = db.query(Empenho).filter(Empenho.id == anulacao.empenho_id).first()
@@ -653,21 +618,27 @@ async def create_recolhimento(recolhimento: RecolhimentoSaldoCreate, db: Session
 @app.get("/recolhimentos-saldo/", response_model=List[RecolhimentoSaldoInDB], summary="Lista recolhimentos (filtro por nota_credito_id)")
 async def read_recolhimentos(
     nota_credito_id: Optional[int] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     query = db.query(RecolhimentoSaldo)
     if nota_credito_id:
         query = query.filter(RecolhimentoSaldo.nota_credito_id == nota_credito_id)
+    query = query.offset((page - 1) * page_size).limit(page_size)
     recolhimentos = query.all()
     return recolhimentos
 
-# ==============================================================================
-# 11. ENDPOINTS DE DASHBOARD
-# ==============================================================================
-
 @app.get("/dashboard/kpis", summary="Retorna KPIs do dashboard")
-async def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_dashboard_kpis(
+    plano_interno: Optional[str] = Query(None),
+    nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
     ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
     
@@ -682,31 +653,29 @@ async def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User =
     }
 
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo")
-def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_dashboard_avisos(
+    plano_interno: Optional[str] = Query(None),
+    nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     data_limite = date.today() + timedelta(days=5)
-    avisos = db.query(NotaCredito).filter(
+    query = db.query(NotaCredito).filter(
         NotaCredito.prazo_empenho <= data_limite,
         NotaCredito.status == "Ativa"
-    ).order_by(NotaCredito.prazo_empenho).all()
+    )
+    if plano_interno:
+        query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
+    if nd:
+        query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
+    if secao_responsavel_id:
+        query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
+    if status:
+        query = query.filter(NotaCredito.status == status)
+    avisos = query.order_by(NotaCredito.prazo_empenho).all()
     return avisos
-
-@app.get("/dashboard/grafico-secoes", response_model=GraficoData, summary="Retorna dados para o gráfico de saldo por seção")
-def get_grafico_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    data = db.query(
-        Seção.nome,
-        func.sum(NotaCredito.saldo_disponivel)
-    ).join(NotaCredito, Seção.id == NotaCredito.secao_responsavel_id)\
-     .group_by(Seção.nome)\
-     .order_by(desc(func.sum(NotaCredito.saldo_disponivel))).all()
-    
-    labels = [row[0] for row in data]
-    values = [row[1] if row[1] is not None else 0.0 for row in data]
-    
-    return {"labels": labels, "data": values}
-
-# ==============================================================================
-# 12. RELATÓRIOS
-# ==============================================================================
 
 @app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF")
 def get_relatorio_pdf(
@@ -783,10 +752,6 @@ def get_relatorio_pdf(
     log_audit_action(db, current_user.username, "RELATORIO_GENERATED", f"Generated PDF report with filters: {plano_interno or 'all'}")
     return Response(content=buffer.getvalue(), media_type='application/pdf', headers=headers)
 
-# ==============================================================================
-# 13. ENDPOINT DE AUDITORIA
-# ==============================================================================
-
 @app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria (Apenas Admins)")
 def read_audit_logs(
     skip: int = 0,
@@ -797,10 +762,7 @@ def read_audit_logs(
     logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
     return logs
 
-# ==============================================================================
-# 14. SEED DE USUÁRIO INICIAL
-# ==============================================================================
-
+# Seed de usuário inicial
 def create_first_admin():
     with SessionLocal() as db:
         if not db.query(User).filter(User.username == "admin").first():
@@ -809,6 +771,12 @@ def create_first_admin():
             db.add(admin)
             db.commit()
             print("Admin criado: username=admin, password=admin123")
+            # Criar seção padrão
+            if not db.query(Seção).first():
+                secao_padrao = Seção(nome="Seção Padrão")
+                db.add(secao_padrao)
+                db.commit()
+                print("Seção padrão criada")
 
 if __name__ == "__main__":
     create_first_admin()
