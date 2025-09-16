@@ -1,9 +1,7 @@
-// login.js
 document.addEventListener('DOMContentLoaded', () => {
     const loginForm = document.getElementById('login-form');
     const errorMessage = document.getElementById('error-message');
-
-    const API_URL = 'https://salc.onrender.com';
+    const API_URL = 'https://salc.onrender.com'; // Atualize para Railway após deploy
 
     loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -12,15 +10,8 @@ document.addEventListener('DOMContentLoaded', () => {
         submitButton.disabled = true;
         submitButton.textContent = 'Autenticando...';
 
-        const username = e.target.username.value.trim();
+        const username = e.target.username.value;
         const password = e.target.password.value;
-
-        if (!username || !password) {
-            errorMessage.textContent = 'Erro: Usuário e senha são obrigatórios';
-            submitButton.disabled = false;
-            submitButton.textContent = 'Entrar';
-            return;
-        }
 
         const formData = new URLSearchParams();
         formData.append('username', username);
@@ -29,9 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch(`${API_URL}/token`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: formData,
             });
 
