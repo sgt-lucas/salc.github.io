@@ -35,14 +35,15 @@ load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 120  # Aumentado para 2 horas
+ACCESS_TOKEN_EXPIRE_MINUTES = 120
 FRONTEND_URL = os.getenv("FRONTEND_URL")
+# **NOVA VARIÁVEL** para o domínio do backend
+BACKEND_URL = "salc.onrender.com"
 
 if not SECRET_KEY:
     raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
 if not FRONTEND_URL:
     raise RuntimeError("FATAL: A variável de ambiente FRONTEND_URL não está configurada.")
-
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -54,7 +55,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
 
-# Corrige a string de conexão para compatibilidade com SQLAlchemy 2.0
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -361,8 +361,6 @@ def read_root():
 
 # --- AUTENTICAÇÃO ---
 
-# Encontre esta função no seu main.py e substitua-a pela versão abaixo
-
 @app.post("/token", summary="Autentica e define um cookie HttpOnly com o token", tags=["Autenticação"])
 async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
@@ -372,32 +370,23 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
 
     access_token = create_access_token(data={"sub": user.username, "role": user.role.value})
     log_audit_action(db, user.username, "LOGIN_SUCCESS")
-    
-    # Extrai o domínio base do FRONTEND_URL para o cookie
-    # Ex: de "https://salc.onrender.com" para "salc.onrender.com"
-    # Isto é uma prática robusta, embora o Render use um subdomínio único.
-    cookie_domain = FRONTEND_URL.replace("https://", "").replace("http://", "").split(":")[0]
 
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="none",  # Essencial para pedidos entre domínios diferentes
-        secure=True,      # Obrigatório quando samesite="none"
+        samesite="none",
+        secure=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",         # Garante que o cookie é válido para todo o site
-        # O domínio é o do backend, onde a API está. O navegador saberá enviá-lo
-        # de volta para o mesmo domínio de onde o recebeu.
-        # No entanto, para cross-site, é melhor não especificar o domínio
-        # e deixar o navegador geri-lo com base na origem do pedido.
-        # Vamos remover a linha 'domain' para a abordagem mais compatível.
+        path="/",
+        domain=BACKEND_URL # **<-- CORREÇÃO FINAL**
     )
     return {"message": "Login bem-sucedido"}
 
 @app.post("/logout", summary="Desloga o utilizador", tags=["Autenticação"])
 def logout(response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     log_audit_action(db, current_user.username, "LOGOUT_SUCCESS")
-    response.delete_cookie("access_token")
+    response.delete_cookie("access_token", domain=BACKEND_URL, path="/")
     return {"message": "Logout bem-sucedido"}
 
 @app.get("/users/me", response_model=UserInDB, summary="Retorna informações do utilizador logado", tags=["Autenticação"])
@@ -848,43 +837,3 @@ def read_audit_logs(
 ):
     logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
     return logs
-
-# --- Função para popular a base de dados (para desenvolvimento) ---
-
-def create_first_admin_and_section():
-    """
-    Verifica se existe um utilizador admin e uma seção. Se não, cria-os.
-    Esta função é útil para a configuração inicial da base de dados.
-    """
-    db = SessionLocal()
-    try:
-        # Verifica se o utilizador admin existe
-        admin_user = db.query(User).filter(User.username == "admin").first()
-        if not admin_user:
-            print("Utilizador 'admin' não encontrado. A criar...")
-            hashed_password = get_password_hash("admin123")
-            admin = User(
-                username="admin", 
-                email="admin@salc.com", 
-                hashed_password=hashed_password, 
-                role=UserRole.ADMINISTRADOR
-            )
-            db.add(admin)
-            db.commit()
-            print("SUCESSO: Utilizador 'admin' criado com a senha 'admin123'.")
-        else:
-            print("Utilizador 'admin' já existe.")
-
-        # Verifica se existe pelo menos uma seção
-        any_section = db.query(Seção).first()
-        if not any_section:
-            print("Nenhuma seção encontrada. A criar seção padrão...")
-            default_section = Seção(nome="Seção Padrão")
-            db.add(default_section)
-            db.commit()
-            print("SUCESSO: 'Seção Padrão' criada.")
-        else:
-            print("Pelo menos uma seção já existe.")
-
-    finally:
-        db.close()
