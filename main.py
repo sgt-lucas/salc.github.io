@@ -489,7 +489,7 @@ def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db),
 @app.get("/notas-credito", response_model=PaginatedNCS, summary="Lista e filtra as Notas de Crédito", tags=["Notas de Crédito"])
 def read_notas_credito(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100), plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
+    size: int = Query(10, ge=1, le=1000), plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
     secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
 ):
     query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel))
@@ -567,8 +567,13 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         
         db.commit()
         
-        db.refresh(db_empenho)
-        return db_empenho
+        # Após o commit, o db_empenho.id está disponível. Recarregamos o objeto completo.
+        empenho_completo = db.query(Empenho).options(
+            joinedload(Empenho.secao_requisitante),
+            joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel)
+        ).filter(Empenho.id == db_empenho.id).first()
+
+        return empenho_completo
 
     except IntegrityError:
         db.rollback()
@@ -581,7 +586,7 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
 @app.get("/empenhos", response_model=PaginatedEmpenhos, summary="Lista e filtra Empenhos", tags=["Empenhos"])
 def read_empenhos(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=100), nota_credito_id: Optional[int] = Query(None)
+    size: int = Query(10, ge=1, le=1000), nota_credito_id: Optional[int] = Query(None)
 ):
     query = db.query(Empenho).options(
         joinedload(Empenho.secao_requisitante),
