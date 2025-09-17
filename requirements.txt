@@ -8,3 +8,4 @@ pydantic[email]
 pandas
 reportlab
 python-multipart
+python-dotenv
