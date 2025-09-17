@@ -9,7 +9,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, validator
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
-from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase
+from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
@@ -492,7 +492,7 @@ def read_notas_credito(
     size: int = Query(10, ge=1, le=100), plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
     secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
 ):
-    query = db.query(NotaCredito)
+    query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel))
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
@@ -503,7 +503,7 @@ def read_notas_credito(
 
 @app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém detalhes de uma Nota de Crédito", tags=["Notas de Crédito"])
 def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    db_nc = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel)).filter(NotaCredito.id == nc_id).first()
     if not db_nc:
         raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
     return db_nc
@@ -557,8 +557,7 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
     try:
         db_empenho = Empenho(**empenho_in.dict())
         db.add(db_empenho)
-        db.flush() 
-
+        
         db_nc.saldo_disponivel -= empenho_in.valor
         if db_nc.saldo_disponivel < 0.01:
             db_nc.saldo_disponivel = 0
@@ -568,6 +567,7 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         
         db.commit()
         
+        # Após o commit, o db_empenho.id está disponível. Recarregamos o objeto completo.
         db.refresh(db_empenho)
         return db_empenho
 
@@ -584,7 +584,10 @@ def read_empenhos(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100), nota_credito_id: Optional[int] = Query(None)
 ):
-    query = db.query(Empenho)
+    query = db.query(Empenho).options(
+        joinedload(Empenho.secao_requisitante),
+        joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel)
+    )
     if nota_credito_id:
         query = query.filter(Empenho.nota_credito_id == nota_credito_id)
     total = query.count()
@@ -674,7 +677,7 @@ def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depen
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
 def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     data_limite = date.today() + timedelta(days=7) 
-    avisos = db.query(NotaCredito).filter(
+    avisos = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel)).filter(
         NotaCredito.prazo_empenho <= data_limite,
         NotaCredito.status == "Ativa"
     ).order_by(NotaCredito.prazo_empenho).all()
@@ -700,7 +703,7 @@ def get_relatorio_pdf(
     elements.append(Paragraph(titulo, styles['h1']))
     elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
     elements.append(Spacer(1, 0.25*inch))
-    query = db.query(NotaCredito).order_by(NotaCredito.plano_interno)
+    query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel)).order_by(NotaCredito.plano_interno)
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
