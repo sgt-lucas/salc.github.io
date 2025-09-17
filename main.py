@@ -37,8 +37,6 @@ SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
 FRONTEND_URL = os.getenv("FRONTEND_URL")
-# **NOVA VARIÁVEL** para o domínio do backend
-BACKEND_URL = "salc.onrender.com"
 
 if not SECRET_KEY:
     raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
@@ -379,14 +377,14 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
         secure=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
-        domain=BACKEND_URL # **<-- CORREÇÃO FINAL**
+        domain="onrender.com" # **<-- CORREÇÃO FINAL**
     )
     return {"message": "Login bem-sucedido"}
 
 @app.post("/logout", summary="Desloga o utilizador", tags=["Autenticação"])
 def logout(response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     log_audit_action(db, current_user.username, "LOGOUT_SUCCESS")
-    response.delete_cookie("access_token", domain=BACKEND_URL, path="/")
+    response.delete_cookie("access_token", domain="onrender.com", path="/")
     return {"message": "Logout bem-sucedido"}
 
 @app.get("/users/me", response_model=UserInDB, summary="Retorna informações do utilizador logado", tags=["Autenticação"])
