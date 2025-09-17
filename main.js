@@ -1,721 +1,885 @@
-document.addEventListener('DOMContentLoaded', () => {
-    // ========================================================================
-    // 1. CONFIGURAÇÃO INICIAL E ESTADO DA APLICAÇÃO
-    // ========================================================================
+import os
+import io
+import enum
+import re
+from datetime import date, datetime, timedelta
+from typing import List, Optional
 
-    // IMPORTANTE: Verifique se esta URL corresponde exatamente à URL do seu backend no Render.
-    const API_URL = 'https://salc.onrender.com';
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Response, Cookie
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field, validator
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
+from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql import func
+from dotenv import load_dotenv
 
-    let currentUser = null; // Armazenará { username, role, ... }
+# --- Segurança e Autenticação ---
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordRequestForm
+
+# --- PDF Reporting ---
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+# Carregar variáveis de ambiente do ficheiro .env (para desenvolvimento local)
+load_dotenv()
+
+# ==============================================================================
+# 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA
+# ==============================================================================
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 120  # Aumentado para 2 horas
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+if not SECRET_KEY:
+    raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
+if not FRONTEND_URL:
+    raise RuntimeError("FATAL: A variável de ambiente FRONTEND_URL não está configurada.")
+
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# ==============================================================================
+# 2. CONFIGURAÇÃO DO BANCO DE DADOS
+# ==============================================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
+
+# Corrige a string de conexão para compatibilidade com SQLAlchemy 2.0
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+class Base(DeclarativeBase):
+    pass
+
+# ==============================================================================
+# 3. MODELOS DO BANCO DE DADOS (SQLAlchemy)
+# ==============================================================================
+
+class UserRole(str, enum.Enum):
+    OPERADOR = "OPERADOR"
+    ADMINISTRADOR = "ADMINISTRADOR"
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(SQLAlchemyEnum(UserRole), nullable=False, default=UserRole.OPERADOR)
+
+class Seção(Base):
+    __tablename__ = "secoes"
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, unique=True, nullable=False)
+    notas_credito = relationship("NotaCredito", back_populates="secao_responsavel")
+    empenhos = relationship("Empenho", back_populates="secao_requisitante")
+
+class NotaCredito(Base):
+    __tablename__ = "notas_credito"
+    id = Column(Integer, primary_key=True, index=True)
+    numero_nc = Column(String, unique=True, nullable=False, index=True)
+    valor = Column(Float, nullable=False)
+    esfera = Column(String)
+    fonte = Column(String(10))
+    ptres = Column(String(6))
+    plano_interno = Column(String, index=True)
+    nd = Column(String(6), index=True)
+    data_chegada = Column(Date)
+    prazo_empenho = Column(Date)
+    descricao = Column(String, nullable=True)
+    secao_responsavel_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"), index=True)
+    saldo_disponivel = Column(Float, nullable=False)
+    status = Column(String, default="Ativa", index=True)
+
+    secao_responsavel = relationship("Seção", back_populates="notas_credito")
+    empenhos = relationship("Empenho", back_populates="nota_credito", cascade="all, delete-orphan", passive_deletes=True)
+    recolhimentos = relationship("RecolhimentoSaldo", back_populates="nota_credito", cascade="all, delete-orphan", passive_deletes=True)
+
+class Empenho(Base):
+    __tablename__ = "empenhos"
+    id = Column(Integer, primary_key=True, index=True)
+    numero_ne = Column(String, unique=True, nullable=False, index=True)
+    valor = Column(Float, nullable=False)
+    data_empenho = Column(Date)
+    observacao = Column(String, nullable=True)
+    nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
+    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"))
+
+    nota_credito = relationship("NotaCredito", back_populates="empenhos")
+    secao_requisitante = relationship("Seção", back_populates="empenhos")
+    anulacoes = relationship("AnulacaoEmpenho", back_populates="empenho", cascade="all, delete-orphan", passive_deletes=True)
+
+class AnulacaoEmpenho(Base):
+    __tablename__ = "anulacoes_empenho"
+    id = Column(Integer, primary_key=True, index=True)
+    empenho_id = Column(Integer, ForeignKey("empenhos.id", ondelete="CASCADE"))
+    valor = Column(Float, nullable=False)
+    data = Column(Date, nullable=False)
+    observacao = Column(String, nullable=True)
+
+    empenho = relationship("Empenho", back_populates="anulacoes")
+
+class RecolhimentoSaldo(Base):
+    __tablename__ = "recolhimentos_saldo"
+    id = Column(Integer, primary_key=True, index=True)
+    nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
+    valor = Column(Float, nullable=False)
+    data = Column(Date, nullable=False)
+    observacao = Column(String, nullable=True)
+
+    nota_credito = relationship("NotaCredito", back_populates="recolhimentos")
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    username = Column(String, nullable=False)
+    action = Column(String, nullable=False)
+    details = Column(String, nullable=True)
+
+# ==============================================================================
+# 4. SCHEMAS DE DADOS (Pydantic)
+# ==============================================================================
+
+class UserBase(BaseModel):
+    username: str
+    email: EmailStr
+
+class UserCreate(UserBase):
+    password: str
+    role: UserRole
+
+    @validator('password')
+    def validate_password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('A senha deve ter pelo menos 8 caracteres.')
+        if not re.search("[a-z]", v):
+            raise ValueError('A senha deve conter pelo menos uma letra minúscula.')
+        if not re.search("[A-Z]", v):
+            raise ValueError('A senha deve conter pelo menos uma letra maiúscula.')
+        if not re.search("[0-9]", v):
+            raise ValueError('A senha deve conter pelo menos um número.')
+        return v
+
+class UserInDB(UserBase):
+    id: int
+    role: UserRole
+    class Config:
+        from_attributes = True
+
+class SeçãoBase(BaseModel):
+    nome: str
+
+class SeçãoCreate(SeçãoBase):
+    pass
+
+class SeçãoInDB(SeçãoBase):
+    id: int
+    nome: str
+    class Config:
+        from_attributes = True
+
+class NotaCreditoBase(BaseModel):
+    numero_nc: str
+    valor: float = Field(..., gt=0)
+    esfera: str
+    fonte: str = Field(..., max_length=10)
+    ptres: str = Field(..., max_length=6)
+    plano_interno: str
+    nd: str = Field(..., max_length=6, pattern=r'^\d{6}$')
+    data_chegada: date
+    prazo_empenho: date
+    descricao: Optional[str] = None
+    secao_responsavel_id: int
+
+class NotaCreditoCreate(NotaCreditoBase):
+    pass
+
+class NotaCreditoInDB(NotaCreditoBase):
+    id: int
+    saldo_disponivel: float
+    status: str
+    secao_responsavel: SeçãoInDB
+    class Config:
+        from_attributes = True
+
+class EmpenhoBase(BaseModel):
+    numero_ne: str
+    valor: float = Field(..., gt=0)
+    data_empenho: date
+    observacao: Optional[str] = None
+    nota_credito_id: int
+    secao_requisitante_id: int
+
+class EmpenhoCreate(EmpenhoBase):
+    pass
+
+class EmpenhoInDB(EmpenhoBase):
+    id: int
+    secao_requisitante: SeçãoInDB
+    nota_credito: NotaCreditoInDB 
+    class Config:
+        from_attributes = True
+
+class AnulacaoEmpenhoBase(BaseModel):
+    empenho_id: int
+    valor: float = Field(..., gt=0)
+    data: date
+    observacao: Optional[str] = None
+
+class AnulacaoEmpenhoInDB(AnulacaoEmpenhoBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class RecolhimentoSaldoBase(BaseModel):
+    nota_credito_id: int
+    valor: float = Field(..., gt=0)
+    data: date
+    observacao: Optional[str] = None
+
+class RecolhimentoSaldoInDB(RecolhimentoSaldoBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+class AuditLogInDB(BaseModel):
+    id: int
+    timestamp: datetime
+    username: str
+    action: str
+    details: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class PaginatedNCS(BaseModel):
+    total: int
+    page: int
+    size: int
+    results: List[NotaCreditoInDB]
+
+class PaginatedEmpenhos(BaseModel):
+    total: int
+    page: int
+    size: int
+    results: List[EmpenhoInDB]
+
+# ==============================================================================
+# 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
+# ==============================================================================
+
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_URL],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+def on_startup():
+    print("Iniciando aplicação e criando tabelas da base de dados, se necessário...")
+    Base.metadata.create_all(bind=engine)
+    print("Aplicação iniciada com sucesso.")
+
+
+# ==============================================================================
+# 6. UTILITÁRIOS E DEPENDÊNCIAS
+# ==============================================================================
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def log_audit_action(db: Session, username: str, action: str, details: str = None):
+    log = AuditLog(username=username, action=action, details=details)
+    db.add(log)
+    db.commit()
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(access_token: Optional[str] = Cookie(None), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciais inválidas. Por favor, faça login novamente.",
+    )
+    if access_token is None:
+        raise credentials_exception
+    try:
+        payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.ADMINISTRADOR:
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    return current_user
+
+# ==============================================================================
+# 7. ENDPOINTS DA API
+# ==============================================================================
+
+@app.get("/", summary="Verificação de status da API", tags=["Status"])
+def read_root():
+    return {"status": "API de Gestão de Notas de Crédito no ar."}
+
+# --- AUTENTICAÇÃO ---
+
+@app.post("/token", summary="Autentica e define um cookie HttpOnly com o token", tags=["Autenticação"])
+async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        log_audit_action(db, form_data.username, "LOGIN_FAILED", "Tentativa de login com credenciais incorretas")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utilizador ou senha incorretos")
+
+    access_token = create_access_token(data={"sub": user.username, "role": user.role.value})
+    log_audit_action(db, user.username, "LOGIN_SUCCESS")
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite="none",
+        secure=True,
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return {"message": "Login bem-sucedido"}
+
+@app.post("/logout", summary="Desloga o utilizador", tags=["Autenticação"])
+def logout(response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    log_audit_action(db, current_user.username, "LOGOUT_SUCCESS")
+    response.delete_cookie("access_token")
+    return {"message": "Logout bem-sucedido"}
+
+@app.get("/users/me", response_model=UserInDB, summary="Retorna informações do utilizador logado", tags=["Autenticação"])
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+# --- ADMINISTRAÇÃO: UTILIZADORES ---
+
+@app.post("/users", response_model=UserInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo utilizador (Apenas Admins)", tags=["Administração"])
+def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    if db.query(User).filter(User.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Nome de utilizador já existe")
+    if db.query(User).filter(User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="E-mail já registado")
+
+    try:
+        hashed_password = get_password_hash(user.password)
+        new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        log_audit_action(db, admin_user.username, "USER_CREATED", f"Utilizador '{user.username}' criado com perfil '{user.role.value}'.")
+        return new_user
+    except ValueError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Ocorreu um erro ao criar o utilizador.")
+
+@app.get("/users", response_model=List[UserInDB], summary="Lista todos os utilizadores (Apenas Admins)", tags=["Administração"])
+def read_users(db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    return db.query(User).order_by(User.username).all()
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um utilizador (Apenas Admins)", tags=["Administração"])
+def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    if user_id == admin_user.id:
+        raise HTTPException(status_code=400, detail="Não é permitido excluir o próprio utilizador.")
     
-    // Cache de dados para evitar requisições repetidas e manter o estado da UI
-    let appState = {
-        secoes: [],
-        notasCredito: { total: 0, page: 1, size: 10, results: [] },
-        empenhos: { total: 0, page: 1, size: 10, results: [] },
-        users: [],
-        auditLogs: [],
-        currentFilters: {}, // Guarda os filtros aplicados para preservar o estado
-    };
-
-    // Referências aos elementos principais do DOM
-    const appNav = document.getElementById('app-nav');
-    const appMain = document.getElementById('app-main');
-    const usernameDisplay = document.getElementById('username-display');
-    const logoutBtn = document.getElementById('logout-btn');
-    const modalContainer = document.getElementById('modal-container');
-    const modalTemplate = document.getElementById('modal-template');
-
-    // ========================================================================
-    // 2. INICIALIZAÇÃO E AUTENTICAÇÃO
-    // ========================================================================
-
-    async function initApp() {
-        try {
-            currentUser = await fetchWithAuth('/users/me');
-            renderLayout();
-            navigateTo('dashboard');
-        } catch (error) {
-            window.location.href = 'login.html';
-        }
-    }
-
-    async function logout() {
-        try {
-            await fetchWithAuth('/logout', { method: 'POST' });
-        } catch (error) {
-            console.error("Erro no pedido de logout, mas a redirecionar mesmo assim:", error);
-        } finally {
-            window.location.href = 'login.html';
-        }
-    }
-
-    // ========================================================================
-    // 3. FUNÇÃO AUXILIAR PARA REQUISIÇÕES À API
-    // ========================================================================
-
-    async function fetchWithAuth(endpoint, options = {}) {
-        const defaultOptions = {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-        };
-        const mergedOptions = { ...defaultOptions, ...options, headers: { ...defaultOptions.headers, ...options.headers } };
-        try {
-            const response = await fetch(`${API_URL}${endpoint}`, mergedOptions);
-            if (response.status === 401) {
-                window.location.href = 'login.html';
-                throw new Error('Sessão expirada. Por favor, faça login novamente.');
-            }
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-                throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
-            }
-            if (options.responseType === 'blob') return response.blob();
-            return response.status === 204 ? null : response.json();
-        } catch (error) {
-            throw error;
-        }
-    }
-
-    // ========================================================================
-    // 4. LÓGICA DE MODAIS E NOTIFICAÇÕES
-    // ========================================================================
-
-    function openModal(title, contentHTML, onOpen) {
-        const modalClone = modalTemplate.content.cloneNode(true);
-        const modalBackdrop = modalClone.querySelector('.modal-backdrop');
-        const modalElement = modalClone.querySelector('.modal');
-        modalClone.querySelector('.modal-title').textContent = title;
-        modalClone.querySelector('.modal-body').innerHTML = contentHTML;
-        modalContainer.innerHTML = '';
-        modalContainer.appendChild(modalClone);
-        const closeModalFunc = () => { modalContainer.innerHTML = ''; };
-        modalBackdrop.addEventListener('click', (e) => { if (e.target === modalBackdrop) closeModalFunc(); });
-        modalElement.querySelector('.modal-close-btn').addEventListener('click', closeModalFunc);
-        if (onOpen) onOpen(modalElement, closeModalFunc);
-    }
-
-    function showConfirmationModal(title, message, onConfirm) {
-        const contentHTML = `
-            <p>${message}</p>
-            <div class="form-actions" style="justify-content: flex-end; display: flex; gap: 1rem;">
-                <button id="confirm-cancel-btn" class="btn">Cancelar</button>
-                <button id="confirm-action-btn" class="btn btn-primary">Confirmar</button>
-            </div>`;
-        openModal(title, contentHTML, (modalElement, closeModalFunc) => {
-            modalElement.querySelector('#confirm-action-btn').addEventListener('click', () => { onConfirm(); closeModalFunc(); });
-            modalElement.querySelector('#confirm-cancel-btn').addEventListener('click', closeModalFunc);
-        });
-    }
-
-    // ========================================================================
-    // 5. RENDERIZAÇÃO DO LAYOUT E NAVEGAÇÃO
-    // ========================================================================
-
-    function renderLayout() {
-        usernameDisplay.textContent = `Utilizador: ${currentUser.username} (${currentUser.role})`;
-        logoutBtn.addEventListener('click', logout);
-        let navHTML = `
-            <button class="tab-btn active" data-view="dashboard">Dashboard</button>
-            <button class="tab-btn" data-view="notasCredito">Notas de Crédito</button>
-            <button class="tab-btn" data-view="empenhos">Empenhos</button>`;
-        if (currentUser.role === 'ADMINISTRADOR') {
-            navHTML += `<button class="tab-btn" data-view="admin">Administração</button>`;
-        }
-        appNav.innerHTML = navHTML;
-        appNav.addEventListener('click', (e) => {
-            if (e.target.matches('.tab-btn')) {
-                appNav.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                e.target.classList.add('active');
-                navigateTo(e.target.dataset.view);
-            }
-        });
-    }
-
-    async function navigateTo(view, params = {}) {
-        appMain.innerHTML = `<div class="loading-spinner"><p>A carregar...</p></div>`;
-        try {
-            switch (view) {
-                case 'dashboard': await renderDashboardView(appMain); break;
-                case 'notasCredito': await renderNotasCreditoView(appMain, params.page || 1); break;
-                case 'empenhos': await renderEmpenhosView(appMain, params.page || 1); break;
-                case 'admin': await renderAdminView(appMain); break;
-                default: appMain.innerHTML = `<h1>Página não encontrada</h1>`;
-            }
-        } catch (error) {
-            appMain.innerHTML = `<div class="card error-message"><h3>Erro ao carregar a página</h3><p>${error.message}</p></div>`;
-        }
-    }
-
-    function renderPagination(container, totalItems, currentPage, pageSize, onPageChange) {
-        if (totalItems <= pageSize) {
-            container.innerHTML = ''; return;
-        }
-        const totalPages = Math.ceil(totalItems / pageSize);
-        const startItem = (currentPage - 1) * pageSize + 1;
-        const endItem = Math.min(currentPage * pageSize, totalItems);
-        container.innerHTML = `
-            <div class="pagination">
-                <button id="prev-page-btn" class="btn" ${currentPage === 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i> Anterior</button>
-                <span class="pagination-info">A exibir ${startItem}–${endItem} de ${totalItems}</span>
-                <button id="next-page-btn" class="btn" ${currentPage === totalPages ? 'disabled' : ''}>Próxima <i class="fas fa-chevron-right"></i></button>
-            </div>`;
-        const prevBtn = container.querySelector('#prev-page-btn');
-        const nextBtn = container.querySelector('#next-page-btn');
-        if (prevBtn) prevBtn.addEventListener('click', () => onPageChange(currentPage - 1));
-        if (nextBtn) nextBtn.addEventListener('click', () => onPageChange(currentPage + 1));
-    }
-
-    // ========================================================================
-    // 6. LÓGICA DAS VIEWS
-    // ========================================================================
-
-    async function renderDashboardView(container) {
-        if (appState.secoes.length === 0) {
-            try { appState.secoes = await fetchWithAuth('/secoes'); } catch (error) { console.error("Erro ao carregar seções:", error); }
-        }
-        container.innerHTML = `
-            <div class="view-header"><h1>Dashboard</h1></div>
-            <div class="dashboard-grid">
-                <div class="card kpi-card"><h3>Saldo Disponível Total</h3><p id="kpi-saldo-total">A carregar...</p></div>
-                <div class="card kpi-card"><h3>Total Empenhado</h3><p id="kpi-valor-empenhado">A carregar...</p></div>
-                <div class="card kpi-card"><h3>NCs Ativas</h3><p id="kpi-ncs-ativas">A carregar...</p></div>
-            </div>
-            <div class="card aviso-card"><h3><i class="fas fa-exclamation-triangle"></i> Avisos Importantes (Próximos 7 dias)</h3><div id="aviso-content">A carregar...</div></div>
-            <div class="card">
-                <div class="view-header"><h3>Gerar Relatório em PDF</h3><button id="generate-report-btn" class="btn btn-primary"><i class="fas fa-file-pdf"></i> Gerar Relatório</button></div>
-                <div class="filters">
-                    <div class="filter-group"><label for="report-filter-pi">Plano Interno</label><input type="text" id="report-filter-pi" placeholder="Opcional"></div>
-                    <div class="filter-group"><label for="report-filter-nd">Natureza de Despesa</label><input type="text" id="report-filter-nd" placeholder="Opcional"></div>
-                    <div class="filter-group"><label for="report-filter-secao">Seção Responsável</label><select id="report-filter-secao"><option value="">Todas</option></select></div>
-                    <div class="filter-group"><label for="report-filter-status">Status</label><select id="report-filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
-                </div>
-            </div>`;
-        const secaoSelect = container.querySelector('#report-filter-secao');
-        if (secaoSelect) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
-        container.querySelector('#generate-report-btn').addEventListener('click', generateReport);
-        loadDashboardData();
-    }
-
-    async function loadDashboardData() {
-        try {
-            const [kpis, avisos] = await Promise.all([fetchWithAuth('/dashboard/kpis'), fetchWithAuth('/dashboard/avisos')]);
-            document.getElementById('kpi-saldo-total').textContent = kpis.saldo_disponivel_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-            document.getElementById('kpi-valor-empenhado').textContent = kpis.valor_empenhado_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-            document.getElementById('kpi-ncs-ativas').textContent = kpis.ncs_ativas;
-            const avisoContainer = document.getElementById('aviso-content');
-            if (avisos.length > 0) {
-                avisoContainer.innerHTML = avisos.map(nc => {
-                    const prazo = new Date(nc.prazo_empenho + 'T00:00:00');
-                    const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
-                    const diffDays = Math.ceil((prazo - hoje) / (1000 * 60 * 60 * 24));
-                    let avisoTexto = diffDays > 1 ? `Vence em ${diffDays} dias` : diffDays === 1 ? `Vence amanhã` : diffDays === 0 ? `Vence hoje` : `Venceu há ${Math.abs(diffDays)} dia(s)`;
-                    return `<div class="aviso-item"><strong>NC ${nc.numero_nc}:</strong> ${avisoTexto} (${prazo.toLocaleDateString('pt-BR')})</div>`;
-                }).join('');
-            } else {
-                avisoContainer.innerHTML = '<p>Nenhum aviso no momento.</p>';
-            }
-        } catch (error) {
-            console.error("Erro ao carregar dados do dashboard:", error);
-            ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-ncs-ativas'].forEach(id => document.getElementById(id).textContent = 'Erro');
-            document.getElementById('aviso-content').innerHTML = `<p class="error-message">Não foi possível carregar os avisos.</p>`;
-        }
-    }
-
-    async function generateReport() {
-        const btn = document.getElementById('generate-report-btn');
-        btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A gerar...`;
-        const filters = {
-            plano_interno: document.getElementById('report-filter-pi').value || undefined,
-            nd: document.getElementById('report-filter-nd').value || undefined,
-            secao_responsavel_id: document.getElementById('report-filter-secao').value || undefined,
-            status: document.getElementById('report-filter-status').value || undefined,
-        };
-        Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]);
-        const params = new URLSearchParams(filters).toString();
-        try {
-            const blob = await fetchWithAuth(`/relatorios/pdf?${params}`, { responseType: 'blob' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none'; a.href = url; a.download = 'relatorio_salc.pdf';
-            document.body.appendChild(a); a.click();
-            window.URL.revokeObjectURL(url); a.remove();
-        } catch (error) {
-            openModal('Erro ao Gerar Relatório', `<p>${error.message}</p>`);
-        } finally {
-            btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-pdf"></i> Gerar Relatório`;
-        }
-    }
-
-    async function renderNotasCreditoView(container, page) {
-        container.innerHTML = `
-            <div class="view-header"><h1>Gestão de Notas de Crédito</h1><button id="add-nc-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Adicionar Nova NC</button></div>
-            <div class="filters card">
-                <div class="filter-group"><label for="filter-pi">Plano Interno</label><input type="text" id="filter-pi" placeholder="Filtrar por PI"></div>
-                <div class="filter-group"><label for="filter-nd">Natureza de Despesa</label><input type="text" id="filter-nd" placeholder="Filtrar por ND"></div>
-                <div class="filter-group"><label for="filter-secao">Seção Responsável</label><select id="filter-secao"><option value="">Todas</option></select></div>
-                <div class="filter-group"><label for="filter-status">Status</label><select id="filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
-                <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
-            </div>
-            <div class="table-container card">
-                <table id="nc-table">
-                    <thead><tr><th>Nº da NC</th><th>Plano Interno</th><th>ND</th><th>Seção</th><th>Valor Original</th><th>Saldo Disponível</th><th>Prazo</th><th>Status</th><th class="actions">Ações</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-            <div id="nc-pagination-container"></div>`;
-        const secaoSelect = container.querySelector('#filter-secao');
-        if (appState.secoes.length > 0) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
-        container.querySelector('#filter-pi').value = appState.currentFilters.plano_interno || '';
-        container.querySelector('#filter-nd').value = appState.currentFilters.nd || '';
-        container.querySelector('#filter-secao').value = appState.currentFilters.secao_responsavel_id || '';
-        container.querySelector('#filter-status').value = appState.currentFilters.status || '';
-        await loadNotasCreditoTable(page);
-        container.querySelector('#apply-filters-btn').addEventListener('click', () => {
-            appState.currentFilters = {
-                plano_interno: container.querySelector('#filter-pi').value,
-                nd: container.querySelector('#filter-nd').value,
-                secao_responsavel_id: container.querySelector('#filter-secao').value,
-                status: container.querySelector('#filter-status').value,
-            };
-            loadNotasCreditoTable(1);
-        });
-        container.querySelector('#add-nc-btn').addEventListener('click', () => {
-            const formHTML = getNotaCreditoFormHTML();
-            openModal('Adicionar Nova Nota de Crédito', formHTML, (modalElement, closeModalFunc) => {
-                modalElement.querySelector('#nc-form').addEventListener('submit', (e) => handleNcFormSubmit(e, closeModalFunc));
-            });
-        });
-    }
-
-    async function loadNotasCreditoTable(page = 1) {
-        const tableBody = document.querySelector('#nc-table tbody');
-        if (!tableBody) return;
-        tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">A buscar dados...</td></tr>`;
-        try {
-            const cleanFilters = Object.fromEntries(Object.entries(appState.currentFilters).filter(([_, v]) => v != ''));
-            const params = new URLSearchParams({ page, size: appState.notasCredito.size, ...cleanFilters });
-            const data = await fetchWithAuth(`/notas-credito?${params.toString()}`);
-            appState.notasCredito = data;
-            if (data.results.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">Nenhuma Nota de Crédito encontrada.</td></tr>`;
-                document.getElementById('nc-pagination-container').innerHTML = ''; return;
-            }
-            tableBody.innerHTML = data.results.map(nc => `
-                <tr data-id="${nc.id}">
-                    <td>${nc.numero_nc}</td><td>${nc.plano_interno}</td><td>${nc.nd}</td><td>${nc.secao_responsavel.nome}</td>
-                    <td>${nc.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                    <td>${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                    <td>${new Date(nc.prazo_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
-                    <td><span class="status status-${nc.status.toLowerCase().replace(/ /g, '-')}">${nc.status}</span></td>
-                    <td class="actions">
-                        <button class="btn-icon" data-action="edit-nc" data-id="${nc.id}" title="Editar NC"><i class="fas fa-edit"></i></button>
-                        ${currentUser.role === 'ADMINISTRADOR' ? `<button class="btn-icon btn-delete" data-action="delete-nc" data-id="${nc.id}" data-numero="${nc.numero_nc}" title="Excluir NC"><i class="fas fa-trash"></i></button>` : ''}
-                    </td>
-                </tr>`).join('');
-            const paginationContainer = document.getElementById('nc-pagination-container');
-            renderPagination(paginationContainer, data.total, data.page, data.size, (newPage) => loadNotasCreditoTable(newPage));
-        } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="9" class="error-message">Erro ao carregar dados: ${error.message}</td></tr>`;
-        }
-    }
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado.")
     
-    function getNotaCreditoFormHTML(nc = {}) {
-        const isEditing = !!nc.id;
-        const secoesOptions = appState.secoes.map(s => `<option value="${s.id}" ${s.id === nc.secao_responsavel_id ? 'selected' : ''}>${s.nome}</option>`).join('');
-        return `
-            <form id="nc-form" data-id="${isEditing ? nc.id : ''}" novalidate>
-                <div class="form-grid">
-                    <div class="form-field"><label for="numero_nc">Número da NC</label><input type="text" name="numero_nc" value="${nc.numero_nc || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" value="${nc.valor || ''}" required min="0.01"></div>
-                    <div class="form-field"><label for="secao_responsavel_id">Seção Responsável</label><select name="secao_responsavel_id" required>${secoesOptions}</select></div>
-                    <div class="form-field"><label for="plano_interno">Plano Interno</label><input type="text" name="plano_interno" value="${nc.plano_interno || ''}" required></div>
-                    <div class="form-field"><label for="nd">Natureza de Despesa</label><input type="text" name="nd" value="${nc.nd || ''}" required pattern="\\d{6}" title="Deve conter 6 dígitos numéricos."></div>
-                    <div class="form-field"><label for="ptres">PTRES</label><input type="text" name="ptres" value="${nc.ptres || ''}" required maxlength="6"></div>
-                    <div class="form-field"><label for="fonte">Fonte</label><input type="text" name="fonte" value="${nc.fonte || ''}" required maxlength="10"></div>
-                    <div class="form-field"><label for="esfera">Esfera</label><input type="text" name="esfera" value="${nc.esfera || ''}" required></div>
-                    <div class="form-field"><label for="data_chegada">Data de Chegada</label><input type="date" name="data_chegada" value="${nc.data_chegada || ''}" required></div>
-                    <div class="form-field"><label for="prazo_empenho">Prazo para Empenho</label><input type="date" name="prazo_empenho" value="${nc.prazo_empenho || ''}" required></div>
-                    <div class="form-field form-field-full"><label for="descricao">Descrição</label><textarea name="descricao">${nc.descricao || ''}</textarea></div>
-                </div>
-                <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
-                <div class="form-actions"><button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Nota de Crédito'}</button></div>
-            </form>`;
-    }
+    username = db_user.username
+    db.delete(db_user)
+    db.commit()
+    log_audit_action(db, admin_user.username, "USER_DELETED", f"Utilizador '{username}' (ID: {user_id}) foi excluído.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# --- ADMINISTRAÇÃO: SEÇÕES ---
+
+@app.post("/secoes", response_model=SeçãoInDB, status_code=status.HTTP_201_CREATED, summary="Adiciona uma nova seção", tags=["Administração"])
+def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        db_secao = Seção(nome=secao.nome)
+        db.add(db_secao)
+        db.commit()
+        db.refresh(db_secao)
+        log_audit_action(db, current_user.username, "SECTION_CREATED", f"Seção '{secao.nome}' criada.")
+        return db_secao
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Uma seção com este nome já existe.")
+
+@app.get("/secoes", response_model=List[SeçãoInDB], summary="Lista todas as seções", tags=["Administração"])
+def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(Seção).order_by(Seção.nome).all()
+
+@app.put("/secoes/{secao_id}", response_model=SeçãoInDB, summary="Atualiza o nome de uma seção (Apenas Admins)", tags=["Administração"])
+def update_secao(secao_id: int, secao_update: SeçãoCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_secao = db.query(Seção).filter(Seção.id == secao_id).first()
+    if not db_secao:
+        raise HTTPException(status_code=404, detail="Seção não encontrada.")
     
-    async function handleNcFormSubmit(e, closeModalFunc) {
-        e.preventDefault();
-        const form = e.target;
-        const submitButton = form.querySelector('button[type="submit"]');
-        const feedbackContainer = form.querySelector('#form-feedback');
-        if (!form.checkValidity()) {
-            feedbackContainer.textContent = 'Por favor, preencha todos os campos obrigatórios corretamente.';
-            feedbackContainer.style.display = 'block'; return;
-        }
-        const dataChegada = form.elements.data_chegada.value, prazoEmpenho = form.elements.prazo_empenho.value;
-        if (prazoEmpenho < dataChegada) {
-            feedbackContainer.textContent = 'O prazo para empenho não pode ser anterior à data de chegada.';
-            feedbackContainer.style.display = 'block'; return;
-        }
-        submitButton.disabled = true; submitButton.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A salvar...`;
-        feedbackContainer.style.display = 'none';
-        const id = form.dataset.id;
-        const method = id ? 'PUT' : 'POST', endpoint = id ? `/notas-credito/${id}` : '/notas-credito';
-        const formData = new FormData(form), data = Object.fromEntries(formData.entries());
-        data.valor = parseFloat(data.valor); data.secao_responsavel_id = parseInt(data.secao_responsavel_id);
-        try {
-            await fetchWithAuth(endpoint, { method, body: JSON.stringify(data) });
-            closeModalFunc();
-            await loadNotasCreditoTable(appState.notasCredito.page);
-        } catch (error) {
-            feedbackContainer.textContent = `Erro ao salvar: ${error.message}`;
-            feedbackContainer.style.display = 'block';
-        } finally {
-            submitButton.disabled = false;
-            submitButton.innerHTML = id ? 'Salvar Alterações' : 'Criar Nota de Crédito';
-        }
-    }
+    old_name = db_secao.nome
+    db_secao.nome = secao_update.nome
+    try:
+        db.commit()
+        db.refresh(db_secao)
+        log_audit_action(db, admin_user.username, "SECTION_UPDATED", f"Seção '{old_name}' (ID: {secao_id}) renomeada para '{secao_update.nome}'.")
+        return db_secao
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Uma seção com este novo nome já existe.")
 
-    async function renderEmpenhosView(container, page) {
-        container.innerHTML = `
-            <div class="view-header"><h1>Gestão de Empenhos</h1><button id="add-empenho-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Empenho</button></div>
-            <div class="table-container card">
-                <table id="empenhos-table">
-                    <thead><tr><th>Nº do Empenho</th><th>Nº da NC Associada</th><th>Seção Requisitante</th><th>Valor</th><th>Data</th><th class="actions">Ações</th></tr></thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-            <div id="empenhos-pagination-container"></div>`;
-        await loadEmpenhosTable(page);
-        container.querySelector('#add-empenho-btn').addEventListener('click', async () => {
-            try {
-                const [notasData, secoes] = await Promise.all([
-                    fetchWithAuth('/notas-credito?size=1000&status=Ativa'), 
-                    fetchWithAuth('/secoes')
-                ]);
-                const formHTML = getEmpenhoFormHTML({}, notasData.results, secoes);
-                openModal('Novo Empenho', formHTML, (modalElement, closeModalFunc) => {
-                    modalElement.querySelector('#empenho-form').addEventListener('submit', (e) => handleEmpenhoFormSubmit(e, closeModalFunc));
-                });
-            } catch (error) {
-                openModal('Erro', `<p>Não foi possível carregar os dados para o formulário: ${error.message}</p>`);
-            }
-        });
-    }
+@app.delete("/secoes/{secao_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui uma seção (Apenas Admins)", tags=["Administração"])
+def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_secao = db.query(Seção).filter(Seção.id == secao_id).first()
+    if not db_secao:
+        raise HTTPException(status_code=404, detail="Seção não encontrada.")
 
-    async function loadEmpenhosTable(page = 1) {
-        const tableBody = document.querySelector('#empenhos-table tbody');
-        if (!tableBody) return;
-        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">A buscar dados...</td></tr>`;
-        try {
-            const params = new URLSearchParams({ page, size: appState.empenhos.size });
-            const data = await fetchWithAuth(`/empenhos?${params.toString()}`);
-            appState.empenhos = data;
-            if (data.results.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">Nenhum empenho encontrado.</td></tr>`;
-                document.getElementById('empenhos-pagination-container').innerHTML = ''; return;
-            }
-            tableBody.innerHTML = data.results.map(e => `
-                <tr data-id="${e.id}">
-                    <td>${e.numero_ne}</td><td>${e.nota_credito.numero_nc}</td><td>${e.secao_requisitante.nome}</td>
-                    <td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                    <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
-                    <td class="actions">${currentUser.role === 'ADMINISTRADOR' ? `<button class="btn-icon btn-delete" data-action="delete-empenho" data-id="${e.id}" data-numero="${e.numero_ne}" title="Excluir Empenho"><i class="fas fa-trash"></i></button>` : 'N/A'}</td>
-                </tr>`).join('');
-            const paginationContainer = document.getElementById('empenhos-pagination-container');
-            renderPagination(paginationContainer, data.total, data.page, data.size, (newPage) => loadEmpenhosTable(newPage));
-        } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="6" class="error-message">Erro ao carregar empenhos: ${error.message}</td></tr>`;
-        }
-    }
+    if db.query(NotaCredito).filter(NotaCredito.secao_responsavel_id == secao_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir '{db_secao.nome}', pois está vinculada a Notas de Crédito.")
+    if db.query(Empenho).filter(Empenho.secao_requisitante_id == secao_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir '{db_secao.nome}', pois está vinculada a Empenhos.")
     
-    function getEmpenhoFormHTML(empenho = {}, notasCredito, secoes) {
-        const isEditing = !!empenho.id;
-        const notasOptions = notasCredito.map(nc => `<option value="${nc.id}" ${nc.id === empenho.nota_credito_id ? 'selected' : ''}>${nc.numero_nc} (Saldo: ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})</option>`).join('');
-        const secoesOptions = secoes.map(s => `<option value="${s.id}" ${s.id === empenho.secao_requisitante_id ? 'selected' : ''}>${s.nome}</option>`).join('');
-        return `
-            <form id="empenho-form" data-id="${isEditing ? empenho.id : ''}" novalidate>
-                <div class="form-grid">
-                    <div class="form-field"><label for="numero_ne">Número do Empenho (NE)</label><input type="text" name="numero_ne" value="${empenho.numero_ne || ''}" required></div>
-                    <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${empenho.valor || ''}" required></div>
-                    <div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div>
-                    <div class="form-field"><label for="nota_credito_id">Nota de Crédito Associada</label><select name="nota_credito_id" required>${notasOptions}</select></div>
-                    <div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div>
-                    <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao">${empenho.observacao || ''}</textarea></div>
-                </div>
-                <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
-                <div class="form-actions"><button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Empenho'}</button></div>
-            </form>`;
-    }
+    secao_nome = db_secao.nome
+    db.delete(db_secao)
+    db.commit()
+    log_audit_action(db, admin_user.username, "SECTION_DELETED", f"Seção '{secao_nome}' (ID: {secao_id}) foi excluída.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# --- NOTAS DE CRÉDITO ---
+
+@app.post("/notas-credito", response_model=NotaCreditoInDB, status_code=status.HTTP_201_CREATED, summary="Cria uma nova Nota de Crédito", tags=["Notas de Crédito"])
+def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not db.query(Seção).filter(Seção.id == nc_in.secao_responsavel_id).first():
+        raise HTTPException(status_code=404, detail="Seção responsável não encontrada.")
+
+    try:
+        db_nc = NotaCredito(**nc_in.dict(), saldo_disponivel=nc_in.valor, status="Ativa")
+        db.add(db_nc)
+        db.commit()
+        db.refresh(db_nc)
+        log_audit_action(db, current_user.username, "NC_CREATED", f"NC '{nc_in.numero_nc}' criada com valor R$ {nc_in.valor:,.2f}.")
+        return db_nc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Uma Nota de Crédito com este número já existe.")
+
+@app.get("/notas-credito", response_model=PaginatedNCS, summary="Lista e filtra as Notas de Crédito", tags=["Notas de Crédito"])
+def read_notas_credito(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    plano_interno: Optional[str] = Query(None, description="Filtrar por Plano Interno"),
+    nd: Optional[str] = Query(None, description="Filtrar por Natureza de Despesa"),
+    secao_responsavel_id: Optional[int] = Query(None, description="Filtrar por ID da Seção Responsável"),
+    status: Optional[str] = Query(None, description="Filtrar por Status (Ex: Ativa)")
+):
+    query = db.query(NotaCredito)
+    if plano_interno:
+        query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
+    if nd:
+        query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
+    if secao_responsavel_id:
+        query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
+    if status:
+        query = query.filter(NotaCredito.status == status)
     
-    async function handleEmpenhoFormSubmit(e, closeModalFunc) {
-        e.preventDefault();
-        const form = e.target;
-        const submitButton = form.querySelector('button[type="submit"]');
-        const feedbackContainer = form.querySelector('#form-feedback');
-        if (!form.checkValidity()) {
-            feedbackContainer.textContent = 'Por favor, preencha todos os campos obrigatórios.';
-            feedbackContainer.style.display = 'block'; return;
-        }
-        submitButton.disabled = true; submitButton.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A salvar...`;
-        feedbackContainer.style.display = 'none';
-        const id = form.dataset.id;
-        const method = id ? 'PUT' : 'POST', endpoint = id ? `/empenhos/${id}` : '/empenhos';
-        const formData = new FormData(form), data = Object.fromEntries(formData.entries());
-        data.valor = parseFloat(data.valor);
-        data.nota_credito_id = parseInt(data.nota_credito_id);
-        data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
-        try {
-            await fetchWithAuth(endpoint, { method, body: JSON.stringify(data) });
-            closeModalFunc();
-            await loadEmpenhosTable(appState.empenhos.page);
-        } catch (error) {
-            feedbackContainer.textContent = `Erro ao salvar: ${error.message}`;
-            feedbackContainer.style.display = 'block';
-        } finally {
-            submitButton.disabled = false;
-            submitButton.innerHTML = id ? 'Salvar Alterações' : 'Criar Empenho';
-        }
-    }
+    total = query.count()
+    results = query.order_by(desc(NotaCredito.data_chegada)).offset((page - 1) * size).limit(size).all()
     
-    async function renderAdminView(container) {
-        if (currentUser.role !== 'ADMINISTRADOR') {
-            container.innerHTML = `<div class="card error-message">Acesso negado. Esta área é restrita a administradores.</div>`; return;
-        }
-        container.innerHTML = `
-            <div class="view-header"><h1>Administração do Sistema</h1></div>
-            <nav class="sub-nav">
-                <button class="sub-tab-btn active" data-subview="secoes">Gerir Seções</button>
-                <button class="sub-tab-btn" data-subview="users">Gerir Utilizadores</button>
-                <button class="sub-tab-btn" data-subview="logs">Logs de Auditoria</button>
-            </nav>
-            <div id="admin-content-container"></div>`;
-        const adminContentContainer = container.querySelector('#admin-content-container');
-        container.querySelector('.sub-nav').addEventListener('click', (e) => {
-            if (e.target.matches('.sub-tab-btn')) {
-                const newSubView = e.target.dataset.subview;
-                container.querySelectorAll('.sub-tab-btn').forEach(btn => btn.classList.remove('active'));
-                e.target.classList.add('active');
-                renderAdminSubView(adminContentContainer, newSubView);
-            }
-        });
-        await renderAdminSubView(adminContentContainer, 'secoes');
-    }
+    return {"total": total, "page": page, "size": size, "results": results}
+
+@app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém detalhes de uma Nota de Crédito", tags=["Notas de Crédito"])
+def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not db_nc:
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+    return db_nc
+
+@app.put("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Atualiza uma Nota de Crédito", tags=["Notas de Crédito"])
+def update_nota_credito(nc_id: int, nc_update: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not db_nc:
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+
+    valor_ja_empenhado = db_nc.valor - db_nc.saldo_disponivel
+    novo_saldo = nc_update.valor - valor_ja_empenhado
+    if novo_saldo < -0.01: 
+        raise HTTPException(status_code=400, detail="O novo valor total é menor que o valor já empenhado nesta NC.")
+
+    update_data = nc_update.dict()
+    for key, value in update_data.items():
+        setattr(db_nc, key, value)
     
-    async function renderAdminSubView(container, subView) {
-        container.innerHTML = `<div class="loading-spinner"><p>A carregar...</p></div>`;
-        switch (subView) {
-            case 'users': await renderAdminUsersView(container); break;
-            case 'secoes': await renderAdminSeçõesView(container); break;
-            case 'logs': await renderAdminLogsView(container); break;
-            default: container.innerHTML = 'Selecione uma opção.';
-        }
-    }
+    db_nc.saldo_disponivel = novo_saldo
 
-    async function renderAdminSeçõesView(container) {
-        container.innerHTML = `
-            <div class="card">
-                <h3>Gerir Seções</h3><p>Adicione, renomeie ou exclua seções da lista utilizada nos formulários.</p>
-                <form id="secao-form" class="admin-form">
-                    <input type="hidden" name="id"><input type="text" name="nome" placeholder="Nome da nova seção" required>
-                    <button type="submit" class="btn btn-primary">Adicionar Seção</button>
-                </form>
-                <div class="table-container" style="margin-top: 1.5rem;">
-                    <table id="secoes-table"><thead><tr><th>ID</th><th>Nome da Seção</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table>
-                </div>
-            </div>`;
-        await loadAndRenderSeçõesTable();
-        container.querySelector('#secao-form').addEventListener('submit', handleSecaoFormSubmit);
-    }
+    try:
+        db.commit()
+        db.refresh(db_nc)
+        log_audit_action(db, current_user.username, "NC_UPDATED", f"NC '{db_nc.numero_nc}' (ID: {nc_id}) atualizada.")
+        return db_nc
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Já existe uma Nota de Crédito com o número informado.")
 
-    async function loadAndRenderSeçõesTable() {
-        const tableBody = document.querySelector('#secoes-table tbody');
-        try {
-            const secoes = await fetchWithAuth('/secoes');
-            appState.secoes = secoes;
-            tableBody.innerHTML = secoes.length === 0 ? '<tr><td colspan="3">Nenhuma seção registada.</td></tr>' : secoes.map(s => `
-                <tr data-id="${s.id}">
-                    <td>${s.id}</td><td>${s.nome}</td>
-                    <td class="actions">
-                        <button class="btn-icon" data-action="edit-secao" data-id="${s.id}" data-nome="${s.nome}" title="Editar"><i class="fas fa-edit"></i></button>
-                        <button class="btn-icon btn-delete" data-action="delete-secao" data-id="${s.id}" data-nome="${s.nome}" title="Excluir"><i class="fas fa-trash"></i></button>
-                    </td>
-                </tr>`).join('');
-        } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="3" class="error-message">Erro ao carregar seções: ${error.message}</td></tr>`;
-        }
-    }
+@app.delete("/notas-credito/{nc_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui uma Nota de Crédito (Apenas Admins)", tags=["Notas de Crédito"])
+def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not db_nc:
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
 
-    async function handleSecaoFormSubmit(e) {
-        e.preventDefault();
-        const form = e.target;
-        const id = form.id.value, nome = form.nome.value;
-        const method = id ? 'PUT' : 'POST', endpoint = id ? `/secoes/${id}` : '/secoes';
-        const submitButton = form.querySelector('button[type="submit"]');
-        submitButton.disabled = true;
-        try {
-            await fetchWithAuth(endpoint, { method, body: JSON.stringify({ nome }) });
-            form.reset(); form.id.value = ''; submitButton.textContent = 'Adicionar Seção';
-            await loadAndRenderSeçõesTable();
-        } catch (error) {
-            openModal('Erro ao Salvar', `<p>${error.message}</p>`);
-        } finally {
-            submitButton.disabled = false;
-        }
-    }
-
-    async function renderAdminUsersView(container) {
-        container.innerHTML = `
-            <div class="card">
-                <h3>Gerir Utilizadores</h3><p>Adicione novos utilizadores e defina os seus perfis de acesso.</p>
-                <form id="user-form" class="admin-form-grid">
-                    <input type="text" name="username" placeholder="Nome de utilizador" required><input type="email" name="email" placeholder="E-mail" required>
-                    <input type="password" name="password" placeholder="Senha" required><select name="role" required><option value="OPERADOR">Operador</option><option value="ADMINISTRADOR">Administrador</option></select>
-                    <button type="submit" class="btn btn-primary">Adicionar Utilizador</button>
-                </form>
-                <div id="form-feedback" class="modal-feedback" style="display: none; margin-top: 1rem;"></div>
-                <div class="table-container" style="margin-top: 1.5rem;">
-                    <table id="users-table"><thead><tr><th>ID</th><th>Utilizador</th><th>E-mail</th><th>Perfil</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table>
-                </div>
-            </div>`;
-        await loadAndRenderUsersTable();
-        container.querySelector('#user-form').addEventListener('submit', handleUserFormSubmit);
-    }
-
-    async function loadAndRenderUsersTable() {
-        const tableBody = document.querySelector('#users-table tbody');
-        try {
-            const users = await fetchWithAuth('/users');
-            appState.users = users;
-            tableBody.innerHTML = users.length === 0 ? '<tr><td colspan="5">Nenhum utilizador registado.</td></tr>' : users.map(u => `
-                <tr data-id="${u.id}">
-                    <td>${u.id}</td><td>${u.username}</td><td>${u.email}</td><td>${u.role}</td>
-                    <td class="actions">${u.id === currentUser.id ? '<span>(Você)</span>' : `<button class="btn-icon btn-delete" data-action="delete-user" data-id="${u.id}" data-username="${u.username}" title="Excluir"><i class="fas fa-trash"></i></button>`}</td>
-                </tr>`).join('');
-        } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="5" class="error-message">Erro ao carregar utilizadores: ${error.message}</td></tr>`;
-        }
-    }
+    if db.query(Empenho).filter(Empenho.nota_credito_id == nc_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir a NC '{db_nc.numero_nc}', pois ela possui empenho(s) vinculado(s).")
     
-    async function handleUserFormSubmit(e) {
-        e.preventDefault();
-        const form = e.target;
-        const submitButton = form.querySelector('button[type="submit"]');
-        const feedbackContainer = document.querySelector('#form-feedback');
-        submitButton.disabled = true; feedbackContainer.style.display = 'none';
-        const data = Object.fromEntries(new FormData(form).entries());
-        try {
-            await fetchWithAuth('/users', { method: 'POST', body: JSON.stringify(data) });
-            form.reset();
-            await loadAndRenderUsersTable();
-        } catch (error) {
-            feedbackContainer.textContent = `Erro ao criar utilizador: ${error.message}`;
-            feedbackContainer.style.display = 'block';
-        } finally {
-            submitButton.disabled = false;
-        }
-    }
+    nc_numero = db_nc.numero_nc
+    db.delete(db_nc)
+    db.commit()
+    log_audit_action(db, admin_user.username, "NC_DELETED", f"NC '{nc_numero}' (ID: {nc_id}) foi excluída.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-    async function renderAdminLogsView(container) {
-        container.innerHTML = `
-            <div class="card">
-                <h3>Log de Auditoria</h3><p>Registo de todas as ações importantes realizadas no sistema.</p>
-                <div class="table-container" style="margin-top: 1.5rem;">
-                    <table id="logs-table"><thead><tr><th>Data/Hora (UTC)</th><th>Utilizador</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody></tbody></table>
-                </div>
-            </div>`;
-        await loadAndRenderAuditLogsTable();
-    }
+# --- EMPENHOS ---
+
+@app.post("/empenhos", response_model=EmpenhoInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo Empenho", tags=["Empenhos"])
+def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        with db.begin_nested():
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == empenho_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if db_nc.status != "Ativa":
+                raise HTTPException(status_code=400, detail=f"Não é possível empenhar em uma NC com status '{db_nc.status}'.")
+            if empenho_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do empenho (R$ {empenho_in.valor:,.2f}) excede o saldo disponível (R$ {db_nc.saldo_disponivel:,.2f}).")
+
+            db_empenho = Empenho(**empenho_in.dict())
+            db.add(db_empenho)
+
+            db_nc.saldo_disponivel -= empenho_in.valor
+            if db_nc.saldo_disponivel < 0.01:
+                db_nc.saldo_disponivel = 0
+                db_nc.status = "Totalmente Empenhada"
+
+            db.commit() 
+            log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'.")
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Um Empenho com este número de NE já existe.")
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+
+    db.refresh(db_empenho)
+    return db_empenho
+
+
+@app.get("/empenhos", response_model=PaginatedEmpenhos, summary="Lista e filtra Empenhos", tags=["Empenhos"])
+def read_empenhos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    nota_credito_id: Optional[int] = Query(None, description="Filtrar por ID da Nota de Crédito")
+):
+    query = db.query(Empenho)
+    if nota_credito_id:
+        query = query.filter(Empenho.nota_credito_id == nota_credito_id)
+
+    total = query.count()
+    results = query.order_by(desc(Empenho.data_empenho)).offset((page - 1) * size).limit(size).all()
+    return {"total": total, "page": page, "size": size, "results": results}
+
+
+@app.delete("/empenhos/{empenho_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um Empenho (Apenas Admins)", tags=["Empenhos"])
+def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    try:
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho não encontrado.")
+
+            if db.query(AnulacaoEmpenho).filter(AnulacaoEmpenho.empenho_id == empenho_id).first():
+                raise HTTPException(status_code=400, detail="Não é possível excluir empenho, pois ele possui anulações registadas.")
+
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+
+            if db_nc:
+                db_nc.saldo_disponivel += db_empenho.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+
+            empenho_numero = db_empenho.numero_ne
+            nc_numero = db_nc.numero_nc if db_nc else "N/A"
+
+            db.delete(db_empenho)
+            db.commit()
+            log_audit_action(db, admin_user.username, "EMPENHO_DELETED", f"Empenho '{empenho_numero}' (ID: {empenho_id}) foi excluído da NC '{nc_numero}'. Valor de R$ {db_empenho.valor:,.2f} devolvido ao saldo.")
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# --- ANULAÇÕES E RECOLHIMENTOS ---
+
+@app.post("/anulacoes-empenho", response_model=AnulacaoEmpenhoInDB, summary="Regista uma Anulação de Empenho", tags=["Anulações e Recolhimentos"])
+def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).with_for_update().first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
+
+            soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
+            saldo_empenho = db_empenho.valor - soma_anulacoes
+            if anulacao_in.valor > saldo_empenho:
+                raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
+
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+            if db_nc:
+                db_nc.saldo_disponivel += anulacao_in.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+
+            db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
+            db.add(db_anulacao)
+            db.commit()
+            log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'.")
+            db.refresh(db_anulacao)
+            return db_anulacao
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+
+@app.post("/recolhimentos-saldo", response_model=RecolhimentoSaldoInDB, summary="Regista um Recolhimento de Saldo de uma NC", tags=["Anulações e Recolhimentos"])
+def create_recolhimento(recolhimento_in: RecolhimentoSaldoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        with db.begin_nested():
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if recolhimento_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do recolhimento (R$ {recolhimento_in.valor:,.2f}) excede o saldo disponível da NC (R$ {db_nc.saldo_disponivel:,.2f}).")
+
+            db_nc.saldo_disponivel -= recolhimento_in.valor
+
+            db_recolhimento = RecolhimentoSaldo(**recolhimento_in.dict())
+            db.add(db_recolhimento)
+            db.commit()
+            log_audit_action(db, current_user.username, "RECOLHIMENTO_CREATED", f"Recolhimento de saldo de R$ {recolhimento_in.valor:,.2f} da NC '{db_nc.numero_nc}'.")
+            db.refresh(db_recolhimento)
+            return db_recolhimento
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        
+@app.get("/anulacoes-empenho", response_model=List[AnulacaoEmpenhoInDB], summary="Lista anulações por empenho", tags=["Anulações e Recolhimentos"])
+def read_anulacoes(empenho_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(AnulacaoEmpenho).filter(AnulacaoEmpenho.empenho_id == empenho_id).all()
+
+@app.get("/recolhimentos-saldo", response_model=List[RecolhimentoSaldoInDB], summary="Lista recolhimentos por nota de crédito", tags=["Anulações e Recolhimentos"])
+def read_recolhimentos(nota_credito_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(RecolhimentoSaldo).filter(RecolhimentoSaldo.nota_credito_id == nota_credito_id).all()
+
+# --- DASHBOARD E RELATÓRIOS ---
+
+@app.get("/dashboard/kpis", summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
+def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
+    ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
     
-    async function loadAndRenderAuditLogsTable() {
-        const tableBody = document.querySelector('#logs-table tbody');
-        tableBody.innerHTML = '<tr><td colspan="4">A carregar logs...</td></tr>';
-        try {
-            const logs = await fetchWithAuth(`/audit-logs?limit=100`);
-            tableBody.innerHTML = logs.length === 0 ? '<tr><td colspan="4">Nenhum log de auditoria encontrado.</td></tr>' : logs.map(log => `
-                <tr>
-                    <td>${new Date(log.timestamp).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}</td>
-                    <td>${log.username}</td><td><span class="log-action">${log.action}</span></td><td>${log.details || ''}</td>
-                </tr>`).join('');
-        } catch (error) {
-            tableBody.innerHTML = `<tr><td colspan="4" class="error-message">Erro ao carregar logs: ${error.message}</td></tr>`;
-        }
+    soma_empenhos = db.query(func.sum(Empenho.valor)).scalar() or 0.0
+    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).scalar() or 0.0
+    valor_empenhado_liquido = (soma_empenhos or 0.0) - (soma_anulacoes or 0.0)
+
+    return {
+        "saldo_disponivel_total": saldo_total,
+        "valor_empenhado_total": valor_empenhado_liquido,
+        "ncs_ativas": ncs_ativas
     }
 
-    appMain.addEventListener('click', async (e) => {
-        const targetButton = e.target.closest('button.btn-icon');
-        if (!targetButton) return;
-        const { action, id } = targetButton.dataset;
-        if (action === 'edit-nc') {
-            try {
-                const ncData = await fetchWithAuth(`/notas-credito/${id}`);
-                const formHTML = getNotaCreditoFormHTML(ncData);
-                openModal(`Editar Nota de Crédito: ${ncData.numero_nc}`, formHTML, (modal, close) => {
-                    modal.querySelector('#nc-form').addEventListener('submit', (ev) => handleNcFormSubmit(ev, close));
-                });
-            } catch (error) {
-                openModal('Erro', `<p>Não foi possível carregar os dados da NC: ${error.message}</p>`);
-            }
-        }
-        if (action === 'delete-nc') {
-            const numero = targetButton.dataset.numero;
-            showConfirmationModal('Excluir Nota de Crédito', `Tem a certeza de que deseja excluir a NC "${numero}"?`, async () => {
-                try {
-                    await fetchWithAuth(`/notas-credito/${id}`, { method: 'DELETE' });
-                    await loadNotasCreditoTable(appState.notasCredito.page);
-                } catch (error) {
-                    openModal('Erro ao Excluir', `<p>${error.message}</p>`);
-                }
-            });
-        }
-        if (action === 'delete-empenho') {
-            const numero = targetButton.dataset.numero;
-            showConfirmationModal('Excluir Empenho', `Tem a certeza de que deseja excluir o empenho "${numero}"?`, async () => {
-                try {
-                    await fetchWithAuth(`/empenhos/${id}`, { method: 'DELETE' });
-                    await loadEmpenhosTable(appState.empenhos.page);
-                } catch (error) {
-                    openModal('Erro ao Excluir', `<p>${error.message}</p>`);
-                }
-            });
-        }
-        if (action === 'edit-secao') {
-            const nome = targetButton.dataset.nome;
-            const form = document.getElementById('secao-form');
-            if(form) {
-                form.id.value = id;
-                form.nome.value = nome;
-                form.querySelector('button[type="submit"]').textContent = 'Salvar Alterações';
-            }
-        }
-        if (action === 'delete-secao') {
-            const nome = targetButton.dataset.nome;
-            showConfirmationModal('Excluir Seção', `Tem a certeza de que deseja excluir a seção "${nome}"?`, async () => {
-                try {
-                    await fetchWithAuth(`/secoes/${id}`, { method: 'DELETE' });
-                    await loadAndRenderSeçõesTable();
-                } catch (error) {
-                    openModal('Erro ao Excluir', `<p>${error.message}</p>`);
-                }
-            });
-        }
-        if (action === 'delete-user') {
-            const username = targetButton.dataset.username;
-            showConfirmationModal('Excluir Utilizador', `Tem a certeza de que deseja excluir o utilizador "${username}"?`, async () => {
-                try {
-                    await fetchWithAuth(`/users/${id}`, { method: 'DELETE' });
-                    await loadAndRenderUsersTable();
-                } catch (error) {
-                    openModal('Erro ao Excluir', `<p>${error.message}</p>`);
-                }
-            });
-        }
-    });
+@app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
+def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data_limite = date.today() + timedelta(days=7) 
+    avisos = db.query(NotaCredito).filter(
+        NotaCredito.prazo_empenho <= data_limite,
+        NotaCredito.status == "Ativa"
+    ).order_by(NotaCredito.prazo_empenho).all()
+    return avisos
 
-    // ========================================================================
-    // 10. INICIALIZAÇÃO DA APLICAÇÃO
-    // ========================================================================
+@app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF", tags=["Relatórios"])
+def get_relatorio_pdf(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user),
+    plano_interno: Optional[str] = Query(None),
+    nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None),
+    status: Optional[str] = Query(None)
+):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
+    styles = getSampleStyleSheet()
+    styles['h2'].alignment = 1
+    styles['h1'].alignment = 1
+    styles['Normal'].fontSize = 8
     
-    initApp();
-});
+    elements = []
+
+    header_text = "MINISTÉRIO DA DEFESA<br/>EXÉRCITO BRASILEIRO<br/>2º CENTRO DE GEOINFORMAÇÃO"
+    elements.append(Paragraph(header_text, styles['h2']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    titulo = "RELATÓRIO GERAL DE NOTAS DE CRÉDITO"
+    
+    elements.append(Paragraph(titulo, styles['h1']))
+    elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
+    elements.append(Spacer(1, 0.25*inch))
+
+    query = db.query(NotaCredito).order_by(NotaCredito.plano_interno)
+    
+    # Aplicação de Filtros
+    if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
+    if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
+    if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
+    if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
+    
+    ncs = query.all()
+    
+    table_data = [["PI", "ND", "Nº da NC", "Seção", "Valor Original", "Saldo Disponível", "Status", "Prazo"]]
+    for nc in ncs:
+        table_data.append([
+            nc.plano_interno, nc.nd, nc.numero_nc, nc.secao_responsavel.nome,
+            f"R$ {nc.valor:,.2f}", f"R$ {nc.saldo_disponivel:,.2f}", nc.status,
+            nc.prazo_empenho.strftime("%d/%m/%Y")
+        ])
+
+    table = Table(table_data, colWidths=[1.5*inch, 1*inch, 2*inch, 1.5*inch, 1.5*inch, 1.5*inch, 1*inch, 1*inch])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#003366")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f0f0f0")),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    
+    headers = {'Content-Disposition': 'inline; filename="relatorio_salc.pdf"'}
+    log_audit_action(db, current_user.username, "REPORT_GENERATED", f"Filtros: PI={plano_interno}, ND={nd}, Seção={secao_responsavel_id}, Status={status}")
+    return Response(content=buffer.getvalue(), media_type='application/pdf', headers=headers)
+
+# --- AUDITORIA ---
+
+@app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria do sistema (Apenas Admins)", tags=["Auditoria"])
+def read_audit_logs(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    admin_user: User = Depends(get_current_admin_user)
+):
+    logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
+    return logs
+
+# --- Função para popular a base de dados (para desenvolvimento) ---
+
+def create_first_admin_and_section():
+    """
+    Verifica se existe um utilizador admin e uma seção. Se não, cria-os.
+    Esta função é útil para a configuração inicial da base de dados.
+    """
+    db = SessionLocal()
+    try:
+        # Verifica se o utilizador admin existe
+        admin_user = db.query(User).filter(User.username == "admin").first()
+        if not admin_user:
+            print("Utilizador 'admin' não encontrado. A criar...")
+            hashed_password = get_password_hash("admin123")
+            admin = User(
+                username="admin", 
+                email="admin@salc.com", 
+                hashed_password=hashed_password, 
+                role=UserRole.ADMINISTRADOR
+            )
+            db.add(admin)
+            db.commit()
+            print("SUCESSO: Utilizador 'admin' criado com a senha 'admin123'.")
+        else:
+            print("Utilizador 'admin' já existe.")
+
+        # Verifica se existe pelo menos uma seção
+        any_section = db.query(Seção).first()
+        if not any_section:
+            print("Nenhuma seção encontrada. A criar seção padrão...")
+            default_section = Seção(nome="Seção Padrão")
+            db.add(default_section)
+            db.commit()
+            print("SUCESSO: 'Seção Padrão' criada.")
+        else:
+            print("Pelo menos uma seção já existe.")
+
+    finally:
+        db.close()
+
+# Bloco para executar a função de população quando o script é chamado diretamente.
+# Ex: python main.py
+if __name__ == "__main__":
+    print("A executar script de população inicial...")
+    create_first_admin_and_section()
+    print("Script de população concluído.")
+
