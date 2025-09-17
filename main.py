@@ -567,7 +567,6 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         
         db.commit()
         
-        # Após o commit, o db_empenho.id está disponível. Recarregamos o objeto completo.
         db.refresh(db_empenho)
         return db_empenho
 
