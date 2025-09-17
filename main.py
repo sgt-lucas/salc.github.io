@@ -1,53 +1,60 @@
 import os
 import io
 import enum
+import re
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Response, Cookie
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, validator
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
 from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
+from dotenv import load_dotenv
 
-# Segurança e Autenticação
+# --- Segurança e Autenticação ---
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm
 
-# PDF Reporting
+# --- PDF Reporting ---
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.0.0")
+# Carregar variáveis de ambiente do ficheiro .env (para desenvolvimento local)
+load_dotenv()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Ajuste para domínios específicos em produção
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ==============================================================================
+# 1. CONFIGURAÇÃO INICIAL E DE SEGURANÇA
+# ==============================================================================
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 120  # Aumentado para 2 horas
+FRONTEND_URL = os.getenv("FRONTEND_URL")
 
-if SECRET_KEY is None:
+if not SECRET_KEY:
     raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
+if not FRONTEND_URL:
+    raise RuntimeError("FATAL: A variável de ambiente FRONTEND_URL não está configurada.")
+
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# ==============================================================================
+# 2. CONFIGURAÇÃO DO BANCO DE DADOS
+# ==============================================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-if DATABASE_URL is None:
+if not DATABASE_URL:
     raise RuntimeError("FATAL: A variável de ambiente DATABASE_URL não está configurada.")
 
+# Corrige a string de conexão para compatibilidade com SQLAlchemy 2.0
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -56,6 +63,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+# ==============================================================================
+# 3. MODELOS DO BANCO DE DADOS (SQLAlchemy)
+# ==============================================================================
 
 class UserRole(str, enum.Enum):
     OPERADOR = "OPERADOR"
@@ -89,10 +100,10 @@ class NotaCredito(Base):
     data_chegada = Column(Date)
     prazo_empenho = Column(Date)
     descricao = Column(String, nullable=True)
-    secao_responsavel_id = Column(Integer, ForeignKey("secoes.id", ondelete="CASCADE"), index=True)
+    secao_responsavel_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"), index=True)
     saldo_disponivel = Column(Float, nullable=False)
     status = Column(String, default="Ativa", index=True)
-    
+
     secao_responsavel = relationship("Seção", back_populates="notas_credito")
     empenhos = relationship("Empenho", back_populates="nota_credito", cascade="all, delete-orphan", passive_deletes=True)
     recolhimentos = relationship("RecolhimentoSaldo", back_populates="nota_credito", cascade="all, delete-orphan", passive_deletes=True)
@@ -105,8 +116,8 @@ class Empenho(Base):
     data_empenho = Column(Date)
     observacao = Column(String, nullable=True)
     nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
-    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="CASCADE"))
-    
+    secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"))
+
     nota_credito = relationship("NotaCredito", back_populates="empenhos")
     secao_requisitante = relationship("Seção", back_populates="empenhos")
     anulacoes = relationship("AnulacaoEmpenho", back_populates="empenho", cascade="all, delete-orphan", passive_deletes=True)
@@ -118,7 +129,7 @@ class AnulacaoEmpenho(Base):
     valor = Column(Float, nullable=False)
     data = Column(Date, nullable=False)
     observacao = Column(String, nullable=True)
-    
+
     empenho = relationship("Empenho", back_populates="anulacoes")
 
 class RecolhimentoSaldo(Base):
@@ -128,7 +139,7 @@ class RecolhimentoSaldo(Base):
     valor = Column(Float, nullable=False)
     data = Column(Date, nullable=False)
     observacao = Column(String, nullable=True)
-    
+
     nota_credito = relationship("NotaCredito", back_populates="recolhimentos")
 
 class AuditLog(Base):
@@ -139,171 +150,110 @@ class AuditLog(Base):
     action = Column(String, nullable=False)
     details = Column(String, nullable=True)
 
-Base.metadata.create_all(bind=engine)
+# ==============================================================================
+# 4. SCHEMAS DE DADOS (Pydantic)
+# ==============================================================================
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    user = db.query(User).filter(User.username == username).first()
-    if user is None:
-        raise credentials_exception
-    return user
-
-async def get_current_admin_user(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if current_user.role != UserRole.ADMINISTRADOR:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    return current_user
-
-def log_audit_action(db: Session, username: str, action: str, details: str = None):
-    log = AuditLog(username=username, action=action, details=details)
-    db.add(log)
-    db.commit()
-
-class UserCreate(BaseModel):
+class UserBase(BaseModel):
     username: str
     email: EmailStr
+
+class UserCreate(UserBase):
     password: str
     role: UserRole
 
-class UserInDB(BaseModel):
+    @validator('password')
+    def validate_password_strength(cls, v):
+        if len(v) < 8:
+            raise ValueError('A senha deve ter pelo menos 8 caracteres.')
+        if not re.search("[a-z]", v):
+            raise ValueError('A senha deve conter pelo menos uma letra minúscula.')
+        if not re.search("[A-Z]", v):
+            raise ValueError('A senha deve conter pelo menos uma letra maiúscula.')
+        if not re.search("[0-9]", v):
+            raise ValueError('A senha deve conter pelo menos um número.')
+        return v
+
+class UserInDB(UserBase):
     id: int
-    username: str
-    email: EmailStr
     role: UserRole
-
     class Config:
         from_attributes = True
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class SeçãoCreate(BaseModel):
+class SeçãoBase(BaseModel):
     nome: str
 
-class SeçãoInDB(BaseModel):
+class SeçãoCreate(SeçãoBase):
+    pass
+
+class SeçãoInDB(SeçãoBase):
     id: int
     nome: str
-
     class Config:
         from_attributes = True
 
-class NotaCreditoCreate(BaseModel):
+class NotaCreditoBase(BaseModel):
     numero_nc: str
-    valor: float = Field(ge=0)
+    valor: float = Field(..., gt=0)
     esfera: str
-    fonte: str
-    ptres: str
+    fonte: str = Field(..., max_length=10)
+    ptres: str = Field(..., max_length=6)
     plano_interno: str
-    nd: str
+    nd: str = Field(..., max_length=6, pattern=r'^\d{6}$')
     data_chegada: date
     prazo_empenho: date
     descricao: Optional[str] = None
     secao_responsavel_id: int
-    saldo_disponivel: Optional[float] = Field(ge=0, default=None)
 
-class NotaCreditoInDB(BaseModel):
+class NotaCreditoCreate(NotaCreditoBase):
+    pass
+
+class NotaCreditoInDB(NotaCreditoBase):
     id: int
-    numero_nc: str
-    valor: float
-    esfera: str
-    fonte: str
-    ptres: str
-    plano_interno: str
-    nd: str
-    data_chegada: date
-    prazo_empenho: date
-    descricao: Optional[str]
-    secao_responsavel_id: int
-    secao_responsavel: SeçãoInDB
     saldo_disponivel: float
     status: str
-
+    secao_responsavel: SeçãoInDB
     class Config:
         from_attributes = True
 
-class EmpenhoCreate(BaseModel):
+class EmpenhoBase(BaseModel):
     numero_ne: str
-    valor: float = Field(ge=0)
+    valor: float = Field(..., gt=0)
     data_empenho: date
     observacao: Optional[str] = None
     nota_credito_id: int
     secao_requisitante_id: int
 
-class EmpenhoInDB(BaseModel):
-    id: int
-    numero_ne: str
-    valor: float
-    data_empenho: date
-    observacao: Optional[str]
-    nota_credito_id: int
-    secao_requisitante_id: int
+class EmpenhoCreate(EmpenhoBase):
+    pass
 
+class EmpenhoInDB(EmpenhoBase):
+    id: int
+    secao_requisitante: SeçãoInDB
+    # Para evitar carregar a NC inteira aqui, podemos simplificar se necessário
+    # nota_credito: NotaCreditoInDB 
     class Config:
         from_attributes = True
 
-class AnulacaoEmpenhoCreate(BaseModel):
+class AnulacaoEmpenhoBase(BaseModel):
     empenho_id: int
-    valor: float = Field(ge=0)
+    valor: float = Field(..., gt=0)
     data: date
     observacao: Optional[str] = None
 
-class AnulacaoEmpenhoInDB(BaseModel):
+class AnulacaoEmpenhoInDB(AnulacaoEmpenhoBase):
     id: int
-    empenho_id: int
-    valor: float
-    data: date
-    observacao: Optional[str]
-
     class Config:
         from_attributes = True
 
-class RecolhimentoSaldoCreate(BaseModel):
+class RecolhimentoSaldoBase(BaseModel):
     nota_credito_id: int
-    valor: float = Field(ge=0)
+    valor: float = Field(..., gt=0)
     data: date
     observacao: Optional[str] = None
 
-class RecolhimentoSaldoInDB(BaseModel):
+class RecolhimentoSaldoInDB(RecolhimentoSaldoBase):
     id: int
-    nota_credito_id: int
-    valor: float
-    data: date
-    observacao: Optional[str]
-
     class Config:
         from_attributes = True
 
@@ -312,140 +262,264 @@ class AuditLogInDB(BaseModel):
     timestamp: datetime
     username: str
     action: str
-    details: Optional[str]
-
+    details: Optional[str] = None
     class Config:
         from_attributes = True
 
-class GraficoData(BaseModel):
-    labels: List[str]
-    data: List[float]
+# Schemas para respostas paginadas
+class PaginatedNCS(BaseModel):
+    total: int
+    page: int
+    size: int
+    results: List[NotaCreditoInDB]
 
-@app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+class PaginatedEmpenhos(BaseModel):
+    total: int
+    page: int
+    size: int
+    results: List[EmpenhoInDB]
+
+# ==============================================================================
+# 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
+# ==============================================================================
+
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.1.0",
+              description="API para controle de execução orçamentária do 2º CGEO.")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_URL],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("startup")
+def on_startup():
+    print("Iniciando aplicação e criando tabelas da base de dados, se necessário...")
+    Base.metadata.create_all(bind=engine)
+    print("Aplicação iniciada com sucesso.")
+
+
+# ==============================================================================
+# 6. UTILITÁRIOS E DEPENDÊNCIAS
+# ==============================================================================
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def log_audit_action(db: Session, username: str, action: str, details: str = None):
+    log = AuditLog(username=username, action=action, details=details)
+    db.add(log)
+    db.commit()
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(access_token: Optional[str] = Cookie(None), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciais inválidas. Por favor, faça login novamente.",
+    )
+    if access_token is None:
+        raise credentials_exception
+    try:
+        payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_admin_user(current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.ADMINISTRADOR:
+        raise HTTPException(status_code=403, detail="Acesso restrito a administradores")
+    return current_user
+
+# ==============================================================================
+# 7. ENDPOINTS DA API
+# ==============================================================================
+
+@app.get("/", summary="Verificação de status da API", tags=["Status"])
+def read_root():
+    return {"status": "API de Gestão de Notas de Crédito no ar."}
+
+# --- AUTENTICAÇÃO ---
+
+@app.post("/token", summary="Autentica e define um cookie HttpOnly com o token", tags=["Autenticação"])
+async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        log_audit_action(db, "UNKNOWN", "LOGIN_FAILED", f"Failed login attempt for username: {form_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username, "scopes": [str(user.role)]}, expires_delta=access_token_expires
-    )
-    log_audit_action(db, user.username, "LOGIN_SUCCESS")
-    return {"access_token": access_token, "token_type": "bearer"}
+        log_audit_action(db, form_data.username, "LOGIN_FAILED", "Tentativa de login com credenciais incorretas")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Utilizador ou senha incorretos")
 
-@app.get("/users/me", response_model=UserInDB)
+    access_token = create_access_token(data={"sub": user.username, "role": user.role.value})
+    log_audit_action(db, user.username, "LOGIN_SUCCESS")
+
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        samesite="lax",
+        secure=True,  # Em produção, o Cloudflare Pages usa HTTPS, então isto deve ser True
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return {"message": "Login bem-sucedido"}
+
+@app.post("/logout", summary="Desloga o utilizador", tags=["Autenticação"])
+def logout(response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    log_audit_action(db, current_user.username, "LOGOUT_SUCCESS")
+    response.delete_cookie("access_token")
+    return {"message": "Logout bem-sucedido"}
+
+@app.get("/users/me", response_model=UserInDB, summary="Retorna informações do utilizador logado", tags=["Autenticação"])
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-@app.post("/users/", response_model=UserInDB, summary="Cria um novo usuário (Apenas Admins)")
-async def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    db_user = db.query(User).filter(User.username == user.username).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    hashed_password = get_password_hash(user.password)
-    db_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    log_audit_action(db, admin_user.username, "USER_CREATED", f"Created user: {user.username} with role {user.role}")
-    return db_user
 
-@app.get("/users/", response_model=List[UserInDB], summary="Lista todos os usuários (Apenas Admins)")
-async def read_users(db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    users = db.query(User).all()
-    return users
+# --- ADMINISTRAÇÃO: UTILIZADORES ---
 
-@app.delete("/users/{user_id}", summary="Exclui um usuário (Apenas Admins)")
-async def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.id == admin_user.id:
-        raise HTTPException(status_code=400, detail="Cannot delete yourself")
-    username = user.username
-    db.delete(user)
-    db.commit()
-    log_audit_action(db, admin_user.username, "USER_DELETED", f"Deleted user: {username}")
-    return {"detail": "User deleted"}
+@app.post("/users", response_model=UserInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo utilizador (Apenas Admins)", tags=["Administração"])
+def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    if db.query(User).filter(User.username == user.username).first():
+        raise HTTPException(status_code=400, detail="Nome de utilizador já existe")
+    if db.query(User).filter(User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="E-mail já registado")
 
-@app.post("/secoes/", response_model=SeçãoInDB, summary="Cria uma nova seção (Apenas Admins)")
-async def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    db_secao = Seção(nome=secao.nome)
     try:
+        hashed_password = get_password_hash(user.password)
+        new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        log_audit_action(db, admin_user.username, "USER_CREATED", f"Utilizador '{user.username}' criado com perfil '{user.role.value}'.")
+        return new_user
+    except ValueError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Ocorreu um erro ao criar o utilizador.")
+
+@app.get("/users", response_model=List[UserInDB], summary="Lista todos os utilizadores (Apenas Admins)", tags=["Administração"])
+def read_users(db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    return db.query(User).order_by(User.username).all()
+
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um utilizador (Apenas Admins)", tags=["Administração"])
+def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    if user_id == admin_user.id:
+        raise HTTPException(status_code=400, detail="Não é permitido excluir o próprio utilizador.")
+    
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado.")
+    
+    username = db_user.username
+    db.delete(db_user)
+    db.commit()
+    log_audit_action(db, admin_user.username, "USER_DELETED", f"Utilizador '{username}' (ID: {user_id}) foi excluído.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# --- ADMINISTRAÇÃO: SEÇÕES ---
+
+@app.post("/secoes", response_model=SeçãoInDB, status_code=status.HTTP_201_CREATED, summary="Adiciona uma nova seção", tags=["Administração"])
+def create_secao(secao: SeçãoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        db_secao = Seção(nome=secao.nome)
         db.add(db_secao)
         db.commit()
         db.refresh(db_secao)
-        log_audit_action(db, current_user.username, "SECAO_CREATED", f"Created section: {secao.nome}")
+        log_audit_action(db, current_user.username, "SECTION_CREATED", f"Seção '{secao.nome}' criada.")
         return db_secao
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Section name already exists")
+        raise HTTPException(status_code=400, detail="Uma seção com este nome já existe.")
 
-@app.get("/secoes/", response_model=List[SeçãoInDB])
-async def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    secoes = db.query(Seção).all()
-    return secoes
+@app.get("/secoes", response_model=List[SeçãoInDB], summary="Lista todas as seções", tags=["Administração"])
+def read_secoes(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(Seção).order_by(Seção.nome).all()
 
-@app.put("/secoes/{secao_id}", response_model=SeçãoInDB, summary="Atualiza uma seção (Apenas Admins)")
-async def update_secao(secao_id: int, secao: SeçãoCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+@app.put("/secoes/{secao_id}", response_model=SeçãoInDB, summary="Atualiza o nome de uma seção (Apenas Admins)", tags=["Administração"])
+def update_secao(secao_id: int, secao_update: SeçãoCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     db_secao = db.query(Seção).filter(Seção.id == secao_id).first()
     if not db_secao:
-        raise HTTPException(status_code=404, detail="Section not found")
-    db_secao.nome = secao.nome
+        raise HTTPException(status_code=404, detail="Seção não encontrada.")
+    
+    old_name = db_secao.nome
+    db_secao.nome = secao_update.nome
     try:
         db.commit()
         db.refresh(db_secao)
-        log_audit_action(db, admin_user.username, "SECAO_UPDATED", f"Updated section ID {secao_id} to: {secao.nome}")
+        log_audit_action(db, admin_user.username, "SECTION_UPDATED", f"Seção '{old_name}' (ID: {secao_id}) renomeada para '{secao_update.nome}'.")
         return db_secao
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Section name already exists")
+        raise HTTPException(status_code=400, detail="Uma seção com este novo nome já existe.")
 
-@app.delete("/secoes/{secao_id}", summary="Exclui uma seção (Apenas Admins)")
-async def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    secao = db.query(Seção).filter(Seção.id == secao_id).first()
-    if not secao:
-        raise HTTPException(status_code=404, detail="Section not found")
-    nome = secao.nome
-    db.delete(secao)
+@app.delete("/secoes/{secao_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui uma seção (Apenas Admins)", tags=["Administração"])
+def delete_secao(secao_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_secao = db.query(Seção).filter(Seção.id == secao_id).first()
+    if not db_secao:
+        raise HTTPException(status_code=404, detail="Seção não encontrada.")
+
+    if db.query(NotaCredito).filter(NotaCredito.secao_responsavel_id == secao_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir '{db_secao.nome}', pois está vinculada a Notas de Crédito.")
+    if db.query(Empenho).filter(Empenho.secao_requisitante_id == secao_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir '{db_secao.nome}', pois está vinculada a Empenhos.")
+    
+    secao_nome = db_secao.nome
+    db.delete(db_secao)
     db.commit()
-    log_audit_action(db, admin_user.username, "SECAO_DELETED", f"Deleted section: {nome}")
-    return {"detail": "Section deleted"}
+    log_audit_action(db, admin_user.username, "SECTION_DELETED", f"Seção '{secao_nome}' (ID: {secao_id}) foi excluída.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-@app.post("/notas-credito/", response_model=NotaCreditoInDB, summary="Cria uma nova nota de crédito")
-async def create_nota_credito(nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if nc.saldo_disponivel is None:
-        nc.saldo_disponivel = nc.valor
-    if nc.prazo_empenho < nc.data_chegada:
-        raise HTTPException(status_code=400, detail="Prazo para empenho não pode ser anterior à data de chegada")
-    db_nc = NotaCredito(**nc.dict())
+# --- NOTAS DE CRÉDITO ---
+
+@app.post("/notas-credito", response_model=NotaCreditoInDB, status_code=status.HTTP_201_CREATED, summary="Cria uma nova Nota de Crédito", tags=["Notas de Crédito"])
+def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    if not db.query(Seção).filter(Seção.id == nc_in.secao_responsavel_id).first():
+        raise HTTPException(status_code=404, detail="Seção responsável não encontrada.")
+
     try:
+        db_nc = NotaCredito(**nc_in.dict(), saldo_disponivel=nc_in.valor, status="Ativa")
         db.add(db_nc)
         db.commit()
         db.refresh(db_nc)
-        log_audit_action(db, current_user.username, "NC_CREATED", f"Created NC: {nc.numero_nc}")
+        log_audit_action(db, current_user.username, "NC_CREATED", f"NC '{nc_in.numero_nc}' criada com valor R$ {nc_in.valor:,.2f}.")
         return db_nc
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Nota de crédito number already exists")
+        raise HTTPException(status_code=400, detail="Uma Nota de Crédito com este número já existe.")
 
-@app.get("/notas-credito/", response_model=List[NotaCreditoInDB], summary="Lista notas de crédito com filtros opcionais")
-async def read_notas_credito(
-    plano_interno: Optional[str] = Query(None),
-    nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
+@app.get("/notas-credito", response_model=PaginatedNCS, summary="Lista e filtra as Notas de Crédito", tags=["Notas de Crédito"])
+def read_notas_credito(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    plano_interno: Optional[str] = Query(None, description="Filtrar por Plano Interno"),
+    nd: Optional[str] = Query(None, description="Filtrar por Natureza de Despesa"),
+    secao_responsavel_id: Optional[int] = Query(None, description="Filtrar por ID da Seção Responsável"),
+    status: Optional[str] = Query(None, description="Filtrar por Status (Ex: Ativa)")
 ):
-    query = db.query(NotaCredito).join(Seção, NotaCredito.secao_responsavel_id == Seção.id)
+    query = db.query(NotaCredito)
     if plano_interno:
         query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd:
@@ -454,191 +528,209 @@ async def read_notas_credito(
         query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status:
         query = query.filter(NotaCredito.status == status)
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    notas = query.all()
-    return notas
+    
+    total = query.count()
+    results = query.order_by(desc(NotaCredito.data_chegada)).offset((page - 1) * size).limit(size).all()
+    
+    return {"total": total, "page": page, "size": size, "results": results}
 
-@app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém uma nota de crédito por ID")
-async def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
-    if not nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    return nc
-
-@app.put("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Atualiza uma nota de crédito")
-async def update_nota_credito(nc_id: int, nc: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+@app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém detalhes de uma Nota de Crédito", tags=["Notas de Crédito"])
+def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
     if not db_nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    if nc.prazo_empenho < nc.data_chegada:
-        raise HTTPException(status_code=400, detail="Prazo para empenho não pode ser anterior à data de chegada")
-    for key, value in nc.dict().items():
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+    return db_nc
+
+@app.put("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Atualiza uma Nota de Crédito", tags=["Notas de Crédito"])
+def update_nota_credito(nc_id: int, nc_update: NotaCreditoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not db_nc:
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+
+    valor_ja_empenhado = db_nc.valor - db_nc.saldo_disponivel
+    novo_saldo = nc_update.valor - valor_ja_empenhado
+    if novo_saldo < -0.01: # Usar uma pequena tolerância para erros de ponto flutuante
+        raise HTTPException(status_code=400, detail="O novo valor total é menor que o valor já empenhado nesta NC.")
+
+    update_data = nc_update.dict()
+    for key, value in update_data.items():
         setattr(db_nc, key, value)
-    if nc.saldo_disponivel is None:
-        db_nc.saldo_disponivel = db_nc.valor
+    
+    db_nc.saldo_disponivel = novo_saldo
+
     try:
         db.commit()
         db.refresh(db_nc)
-        log_audit_action(db, current_user.username, "NC_UPDATED", f"Updated NC ID {nc_id}")
+        log_audit_action(db, current_user.username, "NC_UPDATED", f"NC '{db_nc.numero_nc}' (ID: {nc_id}) atualizada.")
         return db_nc
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Nota de crédito number already exists")
+        raise HTTPException(status_code=400, detail="Já existe uma Nota de Crédito com o número informado.")
 
-@app.delete("/notas-credito/{nc_id}", summary="Exclui uma nota de crédito (Apenas Admins)")
-async def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
-    if not nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    numero_nc = nc.numero_nc
-    db.delete(nc)
+@app.delete("/notas-credito/{nc_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui uma Nota de Crédito (Apenas Admins)", tags=["Notas de Crédito"])
+def delete_nota_credito(nc_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
+    db_nc = db.query(NotaCredito).filter(NotaCredito.id == nc_id).first()
+    if not db_nc:
+        raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+
+    if db.query(Empenho).filter(Empenho.nota_credito_id == nc_id).first():
+        raise HTTPException(status_code=400, detail=f"Não é possível excluir a NC '{db_nc.numero_nc}', pois ela possui empenho(s) vinculado(s).")
+    
+    nc_numero = db_nc.numero_nc
+    db.delete(db_nc)
     db.commit()
-    log_audit_action(db, admin_user.username, "NC_DELETED", f"Deleted NC: {numero_nc}")
-    return {"detail": "Nota de crédito deleted"}
+    log_audit_action(db, admin_user.username, "NC_DELETED", f"NC '{nc_numero}' (ID: {nc_id}) foi excluída.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-@app.post("/empenhos/", response_model=EmpenhoInDB, summary="Cria um novo empenho")
-async def create_empenho(empenho: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
-    if not nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    if nc.saldo_disponivel < empenho.valor:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente na NC")
-    db_empenho = Empenho(**empenho.dict())
-    db.add(db_empenho)
-    nc.saldo_disponivel -= empenho.valor
-    if nc.saldo_disponivel <= 0:
-        nc.status = "Totalmente Empenhada"
+# --- EMPENHOS ---
+
+@app.post("/empenhos", response_model=EmpenhoInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo Empenho", tags=["Empenhos"])
+def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     try:
-        db.commit()
-        db.refresh(db_empenho)
-        log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Created empenho: {empenho.numero_ne} for NC {empenho.nota_credito_id}")
-        return db_empenho
+        with db.begin_nested():
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == empenho_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if db_nc.status != "Ativa":
+                raise HTTPException(status_code=400, detail=f"Não é possível empenhar em uma NC com status '{db_nc.status}'.")
+            if empenho_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do empenho (R$ {empenho_in.valor:,.2f}) excede o saldo disponível (R$ {db_nc.saldo_disponivel:,.2f}).")
+
+            db_empenho = Empenho(**empenho_in.dict())
+            db.add(db_empenho)
+
+            db_nc.saldo_disponivel -= empenho_in.valor
+            if db_nc.saldo_disponivel < 0.01:
+                db_nc.saldo_disponivel = 0
+                db_nc.status = "Totalmente Empenhada"
+
+            db.commit() # Commit the nested transaction
+            log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'.")
+
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Empenho number already exists")
+        raise HTTPException(status_code=400, detail="Um Empenho com este número de NE já existe.")
+    except Exception as e:
+        db.rollback()
+        # Raise the original exception if it's an HTTPException, otherwise a generic 500
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
-@app.get("/empenhos/", response_model=List[EmpenhoInDB], summary="Lista empenhos (filtro por nota_credito_id opcional)")
-async def read_empenhos(
-    nota_credito_id: Optional[int] = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
+    db.refresh(db_empenho)
+    return db_empenho
+
+
+@app.get("/empenhos", response_model=PaginatedEmpenhos, summary="Lista e filtra Empenhos", tags=["Empenhos"])
+def read_empenhos(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    nota_credito_id: Optional[int] = Query(None, description="Filtrar por ID da Nota de Crédito")
 ):
     query = db.query(Empenho)
     if nota_credito_id:
         query = query.filter(Empenho.nota_credito_id == nota_credito_id)
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    empenhos = query.all()
-    return empenhos
 
-@app.get("/empenhos/{empenho_id}", response_model=EmpenhoInDB, summary="Obtém um empenho por ID")
-async def read_empenho(empenho_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
-    if not empenho:
-        raise HTTPException(status_code=404, detail="Empenho not found")
-    return empenho
+    total = query.count()
+    results = query.order_by(desc(Empenho.data_empenho)).offset((page - 1) * size).limit(size).all()
+    return {"total": total, "page": page, "size": size, "results": results}
 
-@app.put("/empenhos/{empenho_id}", response_model=EmpenhoInDB, summary="Atualiza um empenho (Apenas Admins)")
-async def update_empenho(empenho_id: int, empenho: EmpenhoCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
-    if not db_empenho:
-        raise HTTPException(status_code=404, detail="Empenho not found")
-    old_valor = db_empenho.valor
-    nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
-    if not nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    if (nc.saldo_disponivel + old_valor) < empenho.valor:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente na NC para o novo valor")
-    nc.saldo_disponivel = nc.saldo_disponivel + old_valor - empenho.valor
-    for key, value in empenho.dict(exclude_unset=True).items():
-        setattr(db_empenho, key, value)
-    if nc.saldo_disponivel <= 0:
-        nc.status = "Totalmente Empenhada"
-    elif nc.status == "Totalmente Empenhada" and nc.saldo_disponivel > 0:
-        nc.status = "Ativa"
+
+@app.delete("/empenhos/{empenho_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Exclui um Empenho (Apenas Admins)", tags=["Empenhos"])
+def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     try:
-        db.commit()
-        db.refresh(db_empenho)
-        log_audit_action(db, admin_user.username, "EMPENHO_UPDATED", f"Updated empenho ID {empenho_id}")
-        return db_empenho
-    except IntegrityError:
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho não encontrado.")
+
+            if db.query(AnulacaoEmpenho).filter(AnulacaoEmpenho.empenho_id == empenho_id).first():
+                raise HTTPException(status_code=400, detail="Não é possível excluir empenho, pois ele possui anulações registadas.")
+
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+
+            if db_nc:
+                db_nc.saldo_disponivel += db_empenho.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+
+            empenho_numero = db_empenho.numero_ne
+            nc_numero = db_nc.numero_nc if db_nc else "N/A"
+
+            db.delete(db_empenho)
+            db.commit()
+            log_audit_action(db, admin_user.username, "EMPENHO_DELETED", f"Empenho '{empenho_numero}' (ID: {empenho_id}) foi excluído da NC '{nc_numero}'. Valor de R$ {db_empenho.valor:,.2f} devolvido ao saldo.")
+    except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Empenho number already exists")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
 
-@app.delete("/empenhos/{empenho_id}", summary="Exclui um empenho (Apenas Admins)")
-async def delete_empenho(empenho_id: int, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
-    empenho = db.query(Empenho).filter(Empenho.id == empenho_id).first()
-    if not empenho:
-        raise HTTPException(status_code=404, detail="Empenho not found")
-    numero_ne = empenho.numero_ne
-    nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
-    if nc:
-        nc.saldo_disponivel += empenho.valor
-        if nc.status == "Totalmente Empenhada":
-            nc.status = "Ativa"
-    db.delete(empenho)
-    db.commit()
-    log_audit_action(db, admin_user.username, "EMPENHO_DELETED", f"Deleted empenho: {numero_ne}")
-    return {"detail": "Empenho deleted"}
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
-@app.post("/anulacoes-empenho/", response_model=AnulacaoEmpenhoInDB, summary="Cria uma anulação de empenho")
-async def create_anulacao(anulacao: AnulacaoEmpenhoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    empenho = db.query(Empenho).filter(Empenho.id == anulacao.empenho_id).first()
-    if not empenho or empenho.valor < anulacao.valor:
-        raise HTTPException(status_code=400, detail="Empenho não encontrado ou valor de anulação inválido")
-    db_anulacao = AnulacaoEmpenho(**anulacao.dict())
-    db.add(db_anulacao)
-    empenho.valor -= anulacao.valor
-    nc = db.query(NotaCredito).filter(NotaCredito.id == empenho.nota_credito_id).first()
-    if nc:
-        nc.saldo_disponivel += anulacao.valor
-        if nc.status == "Totalmente Empenhada" and nc.saldo_disponivel > 0:
-            nc.status = "Ativa"
-    db.commit()
-    db.refresh(db_anulacao)
-    log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Created anulação for empenho {anulacao.empenho_id}")
-    return db_anulacao
+# --- ANULAÇÕES E RECOLHIMENTOS ---
 
-@app.post("/recolhimentos-saldo/", response_model=RecolhimentoSaldoInDB, summary="Cria um recolhimento de saldo")
-async def create_recolhimento(recolhimento: RecolhimentoSaldoCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento.nota_credito_id).first()
-    if not nc:
-        raise HTTPException(status_code=404, detail="Nota de crédito not found")
-    if nc.saldo_disponivel < recolhimento.valor:
-        raise HTTPException(status_code=400, detail="Saldo insuficiente para recolhimento")
-    db_recolhimento = RecolhimentoSaldo(**recolhimento.dict())
-    db.add(db_recolhimento)
-    nc.saldo_disponivel -= recolhimento.valor
-    db.commit()
-    db.refresh(db_recolhimento)
-    log_audit_action(db, current_user.username, "RECOLHIMENTO_CREATED", f"Created recolhimento for NC {recolhimento.nota_credito_id}")
-    return db_recolhimento
+@app.post("/anulacoes-empenho", response_model=AnulacaoEmpenhoInDB, summary="Regista uma Anulação de Empenho", tags=["Anulações e Recolhimentos"])
+def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        with db.begin_nested():
+            db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).with_for_update().first()
+            if not db_empenho:
+                raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
 
-@app.get("/recolhimentos-saldo/", response_model=List[RecolhimentoSaldoInDB], summary="Lista recolhimentos (filtro por nota_credito_id)")
-async def read_recolhimentos(
-    nota_credito_id: Optional[int] = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    query = db.query(RecolhimentoSaldo)
-    if nota_credito_id:
-        query = query.filter(RecolhimentoSaldo.nota_credito_id == nota_credito_id)
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    recolhimentos = query.all()
-    return recolhimentos
+            soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
+            saldo_empenho = db_empenho.valor - soma_anulacoes
+            if anulacao_in.valor > saldo_empenho:
+                raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
 
-@app.get("/dashboard/kpis", summary="Retorna KPIs do dashboard")
-async def get_dashboard_kpis(
-    plano_interno: Optional[str] = Query(None),
-    nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
+            if db_nc:
+                db_nc.saldo_disponivel += anulacao_in.valor
+                if db_nc.status == "Totalmente Empenhada":
+                    db_nc.status = "Ativa"
+
+            db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
+            db.add(db_anulacao)
+            db.commit()
+            log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'.")
+            db.refresh(db_anulacao)
+            return db_anulacao
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+
+@app.post("/recolhimentos-saldo", response_model=RecolhimentoSaldoInDB, summary="Regista um Recolhimento de Saldo de uma NC", tags=["Anulações e Recolhimentos"])
+def create_recolhimento(recolhimento_in: RecolhimentoSaldoBase, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    try:
+        with db.begin_nested():
+            db_nc = db.query(NotaCredito).filter(NotaCredito.id == recolhimento_in.nota_credito_id).with_for_update().first()
+            if not db_nc:
+                raise HTTPException(status_code=404, detail="Nota de Crédito não encontrada.")
+            if recolhimento_in.valor > db_nc.saldo_disponivel:
+                raise HTTPException(status_code=400, detail=f"Valor do recolhimento (R$ {recolhimento_in.valor:,.2f}) excede o saldo disponível da NC (R$ {db_nc.saldo_disponivel:,.2f}).")
+
+            db_nc.saldo_disponivel -= recolhimento_in.valor
+
+            db_recolhimento = RecolhimentoSaldo(**recolhimento_in.dict())
+            db.add(db_recolhimento)
+            db.commit()
+            log_audit_action(db, current_user.username, "RECOLHIMENTO_CREATED", f"Recolhimento de saldo de R$ {recolhimento_in.valor:,.2f} da NC '{db_nc.numero_nc}'.")
+            db.refresh(db_recolhimento)
+            return db_recolhimento
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+
+# --- DASHBOARD E RELATÓRIOS ---
+
+@app.get("/dashboard/kpis", summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
+def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
     ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
     
@@ -652,41 +744,23 @@ async def get_dashboard_kpis(
         "ncs_ativas": ncs_ativas
     }
 
-@app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo")
-def get_dashboard_avisos(
-    plano_interno: Optional[str] = Query(None),
-    nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    data_limite = date.today() + timedelta(days=5)
-    query = db.query(NotaCredito).filter(
+@app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
+def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data_limite = date.today() + timedelta(days=7) # Avisa com 7 dias de antecedência
+    avisos = db.query(NotaCredito).filter(
         NotaCredito.prazo_empenho <= data_limite,
         NotaCredito.status == "Ativa"
-    )
-    if plano_interno:
-        query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
-    if nd:
-        query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
-    if secao_responsavel_id:
-        query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
-    if status:
-        query = query.filter(NotaCredito.status == status)
-    avisos = query.order_by(NotaCredito.prazo_empenho).all()
+    ).order_by(NotaCredito.prazo_empenho).all()
     return avisos
 
-@app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF")
+@app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF", tags=["Relatórios"])
 def get_relatorio_pdf(
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user),
     plano_interno: Optional[str] = Query(None),
     nd: Optional[str] = Query(None),
     secao_responsavel_id: Optional[int] = Query(None),
-    status: Optional[str] = Query(None),
-    data_inicio: Optional[date] = Query(None),
-    data_fim: Optional[date] = Query(None)
+    status: Optional[str] = Query(None)
 ):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
@@ -702,11 +776,6 @@ def get_relatorio_pdf(
     elements.append(Spacer(1, 0.2*inch))
     
     titulo = "RELATÓRIO GERAL DE NOTAS DE CRÉDITO"
-    if secao_responsavel_id:
-        secao = db.query(Seção).filter(Seção.id == secao_responsavel_id).first()
-        if secao: titulo = f"RELATÓRIO DE NCs DA SEÇÃO: {secao.nome.upper()}"
-    elif plano_interno:
-        titulo = f"RELATÓRIO DE NCs DO PLANO INTERNO: {plano_interno.upper()}"
     
     elements.append(Paragraph(titulo, styles['h1']))
     elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
@@ -714,12 +783,11 @@ def get_relatorio_pdf(
 
     query = db.query(NotaCredito).order_by(NotaCredito.plano_interno)
     
+    # Aplicação de Filtros
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
-    if data_inicio: query = query.filter(NotaCredito.data_chegada >= data_inicio)
-    if data_fim: query = query.filter(NotaCredito.data_chegada <= data_fim)
     
     ncs = query.all()
     
@@ -748,11 +816,13 @@ def get_relatorio_pdf(
     doc.build(elements)
     buffer.seek(0)
     
-    headers = {'Content-Disposition': 'inline; filename="relatorio.pdf"'}
-    log_audit_action(db, current_user.username, "RELATORIO_GENERATED", f"Generated PDF report with filters: {plano_interno or 'all'}")
+    headers = {'Content-Disposition': 'inline; filename="relatorio_salc.pdf"'}
+    log_audit_action(db, current_user.username, "REPORT_GENERATED", f"Filtros: PI={plano_interno}, ND={nd}, Seção={secao_responsavel_id}, Status={status}")
     return Response(content=buffer.getvalue(), media_type='application/pdf', headers=headers)
 
-@app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria (Apenas Admins)")
+# --- AUDITORIA ---
+
+@app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria do sistema (Apenas Admins)", tags=["Auditoria"])
 def read_audit_logs(
     skip: int = 0,
     limit: int = 50,
@@ -761,22 +831,3 @@ def read_audit_logs(
 ):
     logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
     return logs
-
-# Seed de usuário inicial
-def create_first_admin():
-    with SessionLocal() as db:
-        if not db.query(User).filter(User.username == "admin").first():
-            hashed_password = get_password_hash("admin123")
-            admin = User(username="admin", email="admin@salc.com", hashed_password=hashed_password, role=UserRole.ADMINISTRADOR)
-            db.add(admin)
-            db.commit()
-            print("Admin criado: username=admin, password=admin123")
-            # Criar seção padrão
-            if not db.query(Seção).first():
-                secao_padrao = Seção(nome="Seção Padrão")
-                db.add(secao_padrao)
-                db.commit()
-                print("Seção padrão criada")
-
-if __name__ == "__main__":
-    create_first_admin()
