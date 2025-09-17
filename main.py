@@ -285,7 +285,7 @@ app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -567,7 +567,6 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'.")
         db.commit()
         
-        # Recarrega o objeto para garantir que as relações estejam carregadas para a resposta
         db.refresh(db_empenho)
         return db_empenho
 
