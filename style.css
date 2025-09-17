@@ -1,4 +1,3 @@
-/* style.css */
 /* ==========================================================================
    1. Variáveis Globais e Reset
    ========================================================================== */
@@ -22,6 +21,8 @@
 body { font-family: var(--font-family); background-color: var(--cor-fundo); color: var(--cor-texto-principal); line-height: 1.6; font-size: 16px; }
 button, input, select, textarea { font-family: inherit; font-size: 1rem; }
 h1, h2, h3 { color: var(--cor-primaria); margin-bottom: 1rem; }
+a { color: var(--cor-primaria); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 /* ==========================================================================
    2. Estilos da Página de Login
@@ -45,7 +46,7 @@ h1, h2, h3 { color: var(--cor-primaria); margin-bottom: 1rem; }
    ========================================================================== */
 .app-container { display: flex; flex-direction: column; min-height: 100vh; }
 .app-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background-color: var(--cor-primaria); color: white; box-shadow: var(--sombra); flex-shrink: 0; }
-.app-header .logo-container h3 { margin: 0; font-size: 1.2rem; font-weight: 600; }
+.app-header .logo-container h3 { margin: 0; font-size: 1.2rem; font-weight: 600; color: white; }
 .app-header .logo-container span { font-size: 0.8rem; opacity: 0.8; }
 .app-header .user-menu { display: flex; align-items: center; gap: 1.5rem; }
 .app-header .user-menu #username-display { font-weight: 500; }
@@ -82,6 +83,7 @@ th { background-color: var(--cor-fundo); font-weight: 600; font-size: 0.9rem; }
 tbody tr:hover { background-color: #e9ecef; }
 .actions { text-align: center; }
 .btn { padding: 0.6rem 1.2rem; border-radius: 5px; border: 1px solid transparent; font-weight: 600; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 0.5rem; }
+.btn:disabled { background-color: var(--cor-texto-secundario); cursor: not-allowed; }
 .btn-primary { background-color: var(--cor-primaria); color: white; }
 .btn-primary:hover { background-color: #002244; }
 .btn-icon { background: none; border: none; cursor: pointer; color: var(--cor-texto-secundario); font-size: 1.1rem; padding: 0.5rem; }
@@ -104,9 +106,16 @@ tbody tr:hover { background-color: #e9ecef; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; }
 .form-field-full { grid-column: 1 / -1; }
 .form-actions { text-align: right; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--cor-borda); }
+.modal-feedback { color: var(--cor-erro); font-weight: 600; margin-top: 1rem; text-align: left; }
+
+/* ==========================================================================
+   6. Estilos de Administração e Paginação
+   ========================================================================== */
 .admin-form { display: flex; gap: 1rem; align-items: flex-end; }
 .admin-form input { flex-grow: 1; }
 .admin-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; align-items: flex-end; }
 .admin-form-grid button { grid-column: 1 / -1; }
 .pagination { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 1.5rem; }
+.pagination-info { font-size: 0.9rem; color: var(--cor-texto-secundario); }
+.pagination button:disabled { background-color: var(--cor-borda); color: var(--cor-texto-secundario); border-color: var(--cor-borda); cursor: not-allowed; }
 .log-action { font-family: 'Courier New', Courier, monospace; background: var(--cor-fundo); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
