@@ -361,6 +361,8 @@ def read_root():
 
 # --- AUTENTICAÇÃO ---
 
+# Encontre esta função no seu main.py e substitua-a pela versão abaixo
+
 @app.post("/token", summary="Autentica e define um cookie HttpOnly com o token", tags=["Autenticação"])
 async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
@@ -370,14 +372,25 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
 
     access_token = create_access_token(data={"sub": user.username, "role": user.role.value})
     log_audit_action(db, user.username, "LOGIN_SUCCESS")
+    
+    # Extrai o domínio base do FRONTEND_URL para o cookie
+    # Ex: de "https://salc.onrender.com" para "salc.onrender.com"
+    # Isto é uma prática robusta, embora o Render use um subdomínio único.
+    cookie_domain = FRONTEND_URL.replace("https://", "").replace("http://", "").split(":")[0]
 
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="none",
-        secure=True,
+        samesite="none",  # Essencial para pedidos entre domínios diferentes
+        secure=True,      # Obrigatório quando samesite="none"
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",         # Garante que o cookie é válido para todo o site
+        # O domínio é o do backend, onde a API está. O navegador saberá enviá-lo
+        # de volta para o mesmo domínio de onde o recebeu.
+        # No entanto, para cross-site, é melhor não especificar o domínio
+        # e deixar o navegador geri-lo com base na origem do pedido.
+        # Vamos remover a linha 'domain' para a abordagem mais compatível.
     )
     return {"message": "Login bem-sucedido"}
 
