@@ -22,7 +22,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 # --- PDF Reporting ---
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
@@ -647,6 +647,9 @@ def create_recolhimento(recolhimento_in: RecolhimentoSaldoBase, db: Session = De
     if recolhimento_in.valor > db_nc.saldo_disponivel:
         raise HTTPException(status_code=400, detail=f"Valor do recolhimento (R$ {recolhimento_in.valor:,.2f}) excede o saldo disponível da NC (R$ {db_nc.saldo_disponivel:,.2f}).")
     db_nc.saldo_disponivel -= recolhimento_in.valor
+    if db_nc.saldo_disponivel < 0.01:
+        db_nc.saldo_disponivel = 0
+        db_nc.status = "Totalmente Empenhada"
     db_recolhimento = RecolhimentoSaldo(**recolhimento_in.dict())
     db.add(db_recolhimento)
     log_audit_action(db, current_user.username, "RECOLHIMENTO_CREATED", f"Recolhimento de saldo de R$ {recolhimento_in.valor:,.2f} da NC '{db_nc.numero_nc}'.")
