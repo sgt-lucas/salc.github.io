@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Response, Cookie
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, validator
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # --- Segurança e Autenticação ---
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 # --- PDF Reporting ---
 from reportlab.lib import colors
@@ -36,14 +36,12 @@ load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
-FRONTEND_URL = os.getenv("FRONTEND_URL")
 
 if not SECRET_KEY:
     raise RuntimeError("FATAL: A variável de ambiente SECRET_KEY não está configurada.")
-if not FRONTEND_URL:
-    raise RuntimeError("FATAL: A variável de ambiente FRONTEND_URL não está configurada.")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # ==============================================================================
 # 2. CONFIGURAÇÃO DO BANCO DE DADOS
@@ -151,6 +149,10 @@ class AuditLog(Base):
 # ==============================================================================
 # 4. SCHEMAS DE DADOS (Pydantic)
 # ==============================================================================
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
 class UserBase(BaseModel):
     username: str
@@ -279,12 +281,12 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.1.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.2.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
-    allow_credentials=True,
+    allow_origins=["*"],  # Permite todas as origens
+    allow_credentials=True, # Mantido para consistência, embora não seja estritamente necessário para tokens Bearer
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -324,15 +326,14 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(access_token: Optional[str] = Cookie(None), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Credenciais inválidas. Por favor, faça login novamente.",
+        headers={"WWW-Authenticate": "Bearer"},
     )
-    if access_token is None:
-        raise credentials_exception
     try:
-        payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
@@ -359,8 +360,8 @@ def read_root():
 
 # --- AUTENTICAÇÃO ---
 
-@app.post("/token", summary="Autentica e define um cookie HttpOnly com o token", tags=["Autenticação"])
-async def login_for_access_token(response: Response, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@app.post("/token", response_model=Token, summary="Autentica o utilizador e retorna um token JWT", tags=["Autenticação"])
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         log_audit_action(db, form_data.username, "LOGIN_FAILED", "Tentativa de login com credenciais incorretas")
@@ -368,30 +369,14 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
 
     access_token = create_access_token(data={"sub": user.username, "role": user.role.value})
     log_audit_action(db, user.username, "LOGIN_SUCCESS")
-
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        samesite="none",
-        secure=True,
-        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",
-        domain="onrender.com" # **<-- CORREÇÃO FINAL**
-    )
-    return {"message": "Login bem-sucedido"}
-
-@app.post("/logout", summary="Desloga o utilizador", tags=["Autenticação"])
-def logout(response: Response, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    log_audit_action(db, current_user.username, "LOGOUT_SUCCESS")
-    response.delete_cookie("access_token", domain="onrender.com", path="/")
-    return {"message": "Logout bem-sucedido"}
+    
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/users/me", response_model=UserInDB, summary="Retorna informações do utilizador logado", tags=["Autenticação"])
 async def read_users_me(current_user: User = Depends(get_current_user)):
     return current_user
 
-
+# ... (O resto do código, de ADMINISTRAÇÃO até ao fim, permanece exatamente o mesmo da versão anterior)
 # --- ADMINISTRAÇÃO: UTILIZADORES ---
 
 @app.post("/users", response_model=UserInDB, status_code=status.HTTP_201_CREATED, summary="Cria um novo utilizador (Apenas Admins)", tags=["Administração"])
