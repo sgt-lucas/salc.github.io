@@ -73,6 +73,7 @@
                     throw new Error(errorData.detail || `Erro ${response.status}: Falha na requisição`);
                 }
                 if (options.responseType === 'blob') return response.blob();
+                // Para status 204 (No Content), a resposta não tem corpo
                 return response.status === 204 ? null : await response.json();
             } catch (error) {
                 // Se a busca falhar por problemas de rede, a mensagem de erro será mais clara.
