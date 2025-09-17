@@ -7,7 +7,9 @@
         // ========================================================================
 
         const API_URL = 'https://salc.onrender.com';
+        const accessToken = localStorage.getItem('accessToken');
         let currentUser = null;
+        
         let appState = {
             secoes: [],
             notasCredito: { total: 0, page: 1, size: 10, results: [] },
@@ -29,23 +31,23 @@
         // ========================================================================
 
         async function initApp() {
+            if (!accessToken) {
+                window.location.href = 'login.html';
+                return;
+            }
             try {
                 currentUser = await fetchWithAuth('/users/me');
                 renderLayout();
                 navigateTo('dashboard');
             } catch (error) {
-                window.location.href = 'login.html';
+                console.error("Falha na inicialização ou token inválido:", error);
+                logout(); // Limpa o token inválido e redireciona
             }
         }
 
-        async function logout() {
-            try {
-                await fetchWithAuth('/logout', { method: 'POST' });
-            } catch (error) {
-                console.error("Erro no pedido de logout:", error);
-            } finally {
-                window.location.href = 'login.html';
-            }
+        function logout() {
+            localStorage.removeItem('accessToken');
+            window.location.href = 'login.html';
         }
 
         // ========================================================================
@@ -53,24 +55,25 @@
         // ========================================================================
 
         async function fetchWithAuth(endpoint, options = {}) {
-            const defaultOptions = {
-                method: 'GET',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
+            const token = localStorage.getItem('accessToken');
+            const headers = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+                ...options.headers,
             };
-            const mergedOptions = { ...defaultOptions, ...options, headers: { ...defaultOptions.headers, ...options.headers } };
+
             try {
-                const response = await fetch(`${API_URL}${endpoint}`, mergedOptions);
+                const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
                 if (response.status === 401) {
-                    window.location.href = 'login.html';
-                    throw new Error('Sessão expirada.');
+                    logout();
+                    throw new Error('Sessão expirada. Por favor, faça login novamente.');
                 }
                 if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-                    throw new Error(errorData.detail || 'Ocorreu um erro na requisição.');
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `Erro ${response.status}: Falha na requisição`);
                 }
                 if (options.responseType === 'blob') return response.blob();
-                return response.status === 204 ? null : response.json();
+                return response.status === 204 ? null : await response.json();
             } catch (error) {
                 throw error;
             }
