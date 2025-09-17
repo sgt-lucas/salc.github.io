@@ -15,7 +15,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const username = e.target.username.value;
         const password = e.target.password.value;
 
-        // O FastAPI espera os dados de login no formato 'form data'.
         const formData = new URLSearchParams();
         formData.append('username', username);
         formData.append('password', password);
@@ -29,20 +28,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: formData,
             });
 
+            const data = await response.json();
+
             if (!response.ok) {
-                // Tenta ler a mensagem de erro detalhada do backend.
-                const data = await response.json();
                 throw new Error(data.detail || 'Falha na autenticação');
             }
 
-            // Se a resposta for OK, o backend já definiu o cookie HttpOnly.
-            // Não é necessário guardar tokens no localStorage. Apenas redirecionamos.
+            // Guarda o token de acesso no localStorage
+            localStorage.setItem('accessToken', data.access_token);
+            
+            // Redireciona o utilizador para a página principal do sistema
             window.location.href = 'index.html';
 
         } catch (error) {
             errorMessage.textContent = `Erro: ${error.message}`;
         } finally {
-            // Reabilita o botão, independentemente do resultado.
             submitButton.disabled = false;
             submitButton.textContent = 'Entrar';
         }
