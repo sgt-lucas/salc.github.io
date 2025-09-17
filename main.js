@@ -635,7 +635,9 @@
                         try {
                             await fetchWithAuth('/recolhimentos-saldo', { method: 'POST', body: JSON.stringify(data) });
                             close();
-                            appMain.querySelector(`[data-action="view-extrato"][data-id="${id}"]`).click();
+                            // Aciona o clique no botão de extrato para recarregar os dados
+                            const viewExtratoButton = appMain.querySelector(`button[data-action="view-extrato"][data-id="${id}"]`);
+                            if (viewExtratoButton) viewExtratoButton.click();
                         } catch(error) {
                             feedback.textContent = error.message;
                             feedback.style.display = 'block';
@@ -665,7 +667,8 @@
                             try {
                                 await fetchWithAuth('/anulacoes-empenho', { method: 'POST', body: JSON.stringify(data) });
                                 close();
-                                appMain.querySelector(`[data-action="view-extrato"][data-id="${id}"]`).click();
+                                const viewExtratoButton = appMain.querySelector(`button[data-action="view-extrato"][data-id="${id}"]`);
+                                if (viewExtratoButton) viewExtratoButton.click();
                             } catch(error) {
                                 feedback.textContent = error.message;
                                 feedback.style.display = 'block';
