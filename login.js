@@ -1,7 +1,9 @@
 document.addEventListener('DOMContentLoaded', () => {
     const loginForm = document.getElementById('login-form');
     const errorMessage = document.getElementById('error-message');
-    const API_URL = 'https://salc.onrender.com'; // Atualize para Railway após deploy
+    
+    // IMPORTANTE: Verifique se esta URL corresponde exatamente à URL do seu backend no Render.
+    const API_URL = 'https://salc.onrender.com';
 
     loginForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -13,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const username = e.target.username.value;
         const password = e.target.password.value;
 
+        // O FastAPI espera os dados de login no formato 'form data'.
         const formData = new URLSearchParams();
         formData.append('username', username);
         formData.append('password', password);
@@ -20,21 +23,26 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch(`${API_URL}/token`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
                 body: formData,
             });
 
-            const data = await response.json();
-
             if (!response.ok) {
+                // Tenta ler a mensagem de erro detalhada do backend.
+                const data = await response.json();
                 throw new Error(data.detail || 'Falha na autenticação');
             }
 
-            localStorage.setItem('accessToken', data.access_token);
+            // Se a resposta for OK, o backend já definiu o cookie HttpOnly.
+            // Não é necessário guardar tokens no localStorage. Apenas redirecionamos.
             window.location.href = 'index.html';
+
         } catch (error) {
             errorMessage.textContent = `Erro: ${error.message}`;
         } finally {
+            // Reabilita o botão, independentemente do resultado.
             submitButton.disabled = false;
             submitButton.textContent = 'Entrar';
         }
