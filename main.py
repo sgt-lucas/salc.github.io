@@ -22,7 +22,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 # --- PDF Reporting ---
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 
@@ -280,7 +280,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.2.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -567,7 +567,6 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         
         db.commit()
         
-        # Após o commit, o db_empenho.id está disponível. Recarregamos o objeto completo.
         empenho_completo = db.query(Empenho).options(
             joinedload(Empenho.secao_requisitante),
             joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel)
@@ -691,14 +690,14 @@ def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Dep
 def get_relatorio_pdf(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
     plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
+    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None),
+    incluir_detalhes: bool = Query(False, description="Incluir detalhes de empenhos e recolhimentos no relatório")
 ):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
     styles = getSampleStyleSheet()
-    styles['h2'].alignment = 1
-    styles['h1'].alignment = 1
-    styles['Normal'].fontSize = 8
+    styles.add(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey)], id='sub_header'))
+    
     elements = []
     header_text = "MINISTÉRIO DA DEFESA<br/>EXÉRCITO BRASILEIRO<br/>2º CENTRO DE GEOINFORMAÇÃO"
     elements.append(Paragraph(header_text, styles['h2']))
@@ -707,30 +706,78 @@ def get_relatorio_pdf(
     elements.append(Paragraph(titulo, styles['h1']))
     elements.append(Paragraph(f"Gerado por: {current_user.username} em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", styles['Normal']))
     elements.append(Spacer(1, 0.25*inch))
-    query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel)).order_by(NotaCredito.plano_interno)
+    
+    query = db.query(NotaCredito).options(
+        joinedload(NotaCredito.secao_responsavel),
+        joinedload(NotaCredito.empenhos),
+        joinedload(NotaCredito.recolhimentos)
+    ).order_by(NotaCredito.plano_interno)
+    
     if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
     if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
     ncs = query.all()
-    table_data = [["PI", "ND", "Nº da NC", "Seção", "Valor Original", "Saldo Disponível", "Status", "Prazo"]]
+    
     for nc in ncs:
-        table_data.append([
-            nc.plano_interno, nc.nd, nc.numero_nc, nc.secao_responsavel.nome,
-            f"R$ {nc.valor:,.2f}", f"R$ {nc.saldo_disponivel:,.2f}", nc.status,
-            nc.prazo_empenho.strftime("%d/%m/%Y")
-        ])
-    table = Table(table_data, colWidths=[1.5*inch, 1*inch, 2*inch, 1.5*inch, 1.5*inch, 1.5*inch, 1*inch, 1*inch])
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#003366")), ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 10), ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor("#f0f0f0")),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    elements.append(table)
+        nc_data = [[
+            Paragraph(f"<b>NC:</b> {nc.numero_nc}", styles['Normal']),
+            Paragraph(f"<b>PI:</b> {nc.plano_interno}", styles['Normal']),
+            Paragraph(f"<b>ND:</b> {nc.nd}", styles['Normal']),
+            Paragraph(f"<b>Seção:</b> {nc.secao_responsavel.nome}", styles['Normal']),
+        ], [
+            Paragraph(f"<b>Valor:</b> R$ {nc.valor:,.2f}", styles['Normal']),
+            Paragraph(f"<b>Saldo:</b> R$ {nc.saldo_disponivel:,.2f}", styles['Normal']),
+            Paragraph(f"<b>Status:</b> {nc.status}", styles['Normal']),
+            Paragraph(f"<b>Prazo:</b> {nc.prazo_empenho.strftime('%d/%m/%Y')}", styles['Normal']),
+        ]]
+        
+        tbl = Table(nc_data, colWidths=[2.7*inch, 2.7*inch, 2.7*inch, 2.7*inch])
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#E6E6E6")),
+            ('GRID', (0,0), (-1,-1), 1, colors.black),
+            ('BOX', (0,0), (-1,-1), 2, colors.black),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ]))
+        elements.append(tbl)
+        
+        if incluir_detalhes:
+            if nc.empenhos:
+                elements.append(Spacer(1, 0.1*inch))
+                empenhos_data = [["<b>Empenhos da NC</b>", "", "", ""], ["Nº da NE", "Valor", "Data", "Observação"]]
+                for e in nc.empenhos:
+                    empenhos_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), e.observacao or ''])
+                
+                empenhos_tbl = Table(empenhos_data, colWidths=[2.7*inch, 2.7*inch, 2.7*inch, 2.7*inch])
+                empenhos_tbl.setStyle(TableStyle([
+                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
+                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
+                ]))
+                elements.append(empenhos_tbl)
+
+            if nc.recolhimentos:
+                elements.append(Spacer(1, 0.1*inch))
+                recolhimentos_data = [["<b>Recolhimentos da NC</b>", "", ""], ["Valor", "Data", "Observação"]]
+                for r in nc.recolhimentos:
+                    recolhimentos_data.append([f"R$ {r.valor:,.2f}", r.data.strftime('%d/%m/%Y'), r.observacao or ''])
+
+                recolhimentos_tbl = Table(recolhimentos_data, colWidths=[3.6*inch, 3.6*inch, 3.6*inch])
+                recolhimentos_tbl.setStyle(TableStyle([
+                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
+                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
+                ]))
+                elements.append(recolhimentos_tbl)
+        
+        elements.append(Spacer(1, 0.2*inch))
+
+    if not ncs:
+        elements.append(Paragraph("Nenhuma Nota de Crédito encontrada para os filtros selecionados.", styles['Normal']))
+    
     doc.build(elements)
     buffer.seek(0)
+    
     headers = {'Content-Disposition': 'inline; filename="relatorio_salc.pdf"'}
     log_audit_action(db, current_user.username, "REPORT_GENERATED", f"Filtros: PI={plano_interno}, ND={nd}, Seção={secao_responsavel_id}, Status={status}")
     db.commit()
