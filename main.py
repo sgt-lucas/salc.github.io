@@ -699,7 +699,6 @@ def get_relatorio_pdf(
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), topMargin=0.5*inch, bottomMargin=0.5*inch)
     styles = getSampleStyleSheet()
-    styles.add(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.lightgrey)], id='sub_header'))
     
     elements = []
     header_text = "MINISTÉRIO DA DEFESA<br/>EXÉRCITO BRASILEIRO<br/>2º CENTRO DE GEOINFORMAÇÃO"
