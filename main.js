@@ -41,7 +41,7 @@
                 navigateTo('dashboard');
             } catch (error) {
                 console.error("Falha na inicialização ou token inválido:", error);
-                logout();
+                logout(); // Limpa o token inválido e redireciona
             }
         }
 
@@ -73,6 +73,7 @@
                     throw new Error(errorData.detail || `Erro ${response.status}: Falha na requisição`);
                 }
                 if (options.responseType === 'blob') return response.blob();
+                // Para status 204 (No Content), a resposta não tem corpo
                 return response.status === 204 ? null : await response.json();
             } catch (error) {
                 throw error;
@@ -195,8 +196,12 @@
                 }
             } catch (error) {
                 console.error("Erro ao carregar dados do dashboard:", error);
-                ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-ncs-ativas'].forEach(id => document.getElementById(id).textContent = 'Erro');
-                document.getElementById('aviso-content').innerHTML = `<p class="error-message">Não foi possível carregar os avisos.</p>`;
+                ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-ncs-ativas'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.textContent = 'Erro';
+                });
+                const avisoEl = document.getElementById('aviso-content');
+                if(avisoEl) avisoEl.innerHTML = `<p class="error-message">Não foi possível carregar os avisos.</p>`;
             }
         }
 
@@ -526,37 +531,18 @@
                     const nc = await fetchWithAuth(`/notas-credito/${id}`);
                     const empenhosData = await fetchWithAuth(`/empenhos?nota_credito_id=${id}&size=1000`);
                     const recolhimentos = await fetchWithAuth(`/recolhimentos-saldo?nota_credito_id=${id}`);
-                    
                     const empenhos = empenhosData.results;
-                    
                     let allAnulacoes = [];
                     for (const empenho of empenhos) {
                         const anulacoes = await fetchWithAuth(`/anulacoes-empenho?empenho_id=${empenho.id}`);
                         allAnulacoes.push(...anulacoes);
                     }
-
                     const empenhosMap = new Map(empenhos.map(e => [e.id, e.numero_ne]));
-                    
                     const empenhosHTML = empenhos.length > 0 ? empenhos.map(e => `<tr><td>${e.numero_ne}</td><td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${e.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="4">Nenhum empenho associado.</td></tr>';
                     const recolhimentosHTML = recolhimentos.length > 0 ? recolhimentos.map(r => `<tr><td>${r.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${r.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="3">Nenhum recolhimento registado.</td></tr>';
                     const anulacoesHTML = allAnulacoes.length > 0 ? allAnulacoes.map(a => `<tr><td>${empenhosMap.get(a.empenho_id) || 'N/A'}</td><td>${a.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(a.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${a.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="4">Nenhuma anulação registada.</td></tr>';
-
-                    const contentHTML = `
-                        <h4>Detalhes da NC ${nc.numero_nc}</h4>
-                        <p><strong>Plano Interno:</strong> ${nc.plano_interno} | <strong>ND:</strong> ${nc.nd} | <strong>Seção:</strong> ${nc.secao_responsavel.nome}</p>
-                        <p><strong>Valor Original:</strong> ${nc.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} | <strong>Saldo Disponível:</strong> ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
-                        <hr style="margin: 1rem 0;">
-                        <h4>Empenhos Associados</h4>
-                        <div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${empenhosHTML}</tbody></table></div>
-                        <hr style="margin: 1rem 0;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;"><h4>Recolhimentos de Saldo</h4><button class="btn" data-action="add-recolhimento" data-id="${id}"><i class="fas fa-plus"></i> Adicionar</button></div>
-                        <div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${recolhimentosHTML}</tbody></table></div>
-                        <hr style="margin: 1rem 0;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;"><h4>Anulações de Empenho</h4><button class="btn" data-action="add-anulacao" data-id="${id}"><i class="fas fa-plus"></i> Adicionar</button></div>
-                        <div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${anulacoesHTML}</tbody></table></div>`;
-                    
+                    const contentHTML = `<div id="extrato-content"><h4>Detalhes da NC ${nc.numero_nc}</h4><p><strong>Plano Interno:</strong> ${nc.plano_interno} | <strong>ND:</strong> ${nc.nd} | <strong>Seção:</strong> ${nc.secao_responsavel.nome}</p><p><strong>Valor Original:</strong> ${nc.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} | <strong>Saldo Disponível:</strong> ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p><hr style="margin: 1rem 0;"><h4>Empenhos Associados</h4><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${empenhosHTML}</tbody></table></div><hr style="margin: 1rem 0;"><div style="display: flex; justify-content: space-between; align-items: center;"><h4>Recolhimentos de Saldo</h4><button class="btn" data-action="add-recolhimento" data-id="${id}"><i class="fas fa-plus"></i> Adicionar</button></div><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${recolhimentosHTML}</tbody></table></div><hr style="margin: 1rem 0;"><div style="display: flex; justify-content: space-between; align-items: center;"><h4>Anulações de Empenho</h4><button class="btn" data-action="add-anulacao" data-id="${id}"><i class="fas fa-plus"></i> Adicionar</button></div><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${anulacoesHTML}</tbody></table></div></div>`;
                     openModal(`Extrato da Nota de Crédito ${nc.numero_nc}`, contentHTML);
-
                 } catch (error) {
                     openModal('Erro', `<p>Não foi possível carregar o extrato: ${error.message}</p>`);
                 }
@@ -627,9 +613,8 @@
             }
         });
         
-        // Listener para os botões dentro do modal de extrato
         modalContainer.addEventListener('click', async (e) => {
-            const targetButton = e.target.closest('button.btn');
+            const targetButton = e.target.closest('button[data-action]');
             if (!targetButton) return;
             const { action, id } = targetButton.dataset;
 
@@ -638,7 +623,7 @@
                 openModal('Adicionar Recolhimento de Saldo', formHTML, (modal, close) => {
                     modal.querySelector('#recolhimento-form').addEventListener('submit', async (ev) => {
                         ev.preventDefault();
-                        const form = ev.target, btn = form.querySelector('button');
+                        const form = ev.target, btn = form.querySelector('button'), feedback = form.querySelector('#form-feedback');
                         btn.disabled = true;
                         const data = Object.fromEntries(new FormData(form).entries());
                         data.valor = parseFloat(data.valor);
@@ -646,40 +631,47 @@
                         try {
                             await fetchWithAuth('/recolhimentos-saldo', { method: 'POST', body: JSON.stringify(data) });
                             close();
-                            // Atualiza a view de extrato
                             appMain.querySelector(`[data-action="view-extrato"][data-id="${id}"]`).click();
                         } catch(error) {
-                            form.querySelector('#form-feedback').textContent = error.message;
-                            form.querySelector('#form-feedback').style.display = 'block';
+                            feedback.textContent = error.message;
+                            feedback.style.display = 'block';
                             btn.disabled = false;
                         }
                     });
                 });
             }
             if (action === 'add-anulacao') {
-                const empenhosData = await fetchWithAuth(`/empenhos?nota_credito_id=${id}&size=1000`);
-                const empenhos = empenhosData.results;
-                const empenhosOptions = empenhos.map(e => `<option value="${e.id}">${e.numero_ne}</option>`).join('');
-                const formHTML = `<form id="anulacao-form"><div class="form-grid"><div class="form-field"><label for="empenho_id">Empenho a Anular</label><select name="empenho_id" required>${empenhosOptions}</select></div><div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div><div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">Criar Anulação</button></div></form>`;
-                openModal('Adicionar Anulação de Empenho', formHTML, (modal, close) => {
-                     modal.querySelector('#anulacao-form').addEventListener('submit', async (ev) => {
-                        ev.preventDefault();
-                        const form = ev.target, btn = form.querySelector('button');
-                        btn.disabled = true;
-                        const data = Object.fromEntries(new FormData(form).entries());
-                        data.valor = parseFloat(data.valor);
-                        data.empenho_id = parseInt(data.empenho_id);
-                        try {
-                            await fetchWithAuth('/anulacoes-empenho', { method: 'POST', body: JSON.stringify(data) });
-                            close();
-                            appMain.querySelector(`[data-action="view-extrato"][data-id="${id}"]`).click();
-                        } catch(error) {
-                            form.querySelector('#form-feedback').textContent = error.message;
-                            form.querySelector('#form-feedback').style.display = 'block';
-                            btn.disabled = false;
-                        }
+                try {
+                    const empenhosData = await fetchWithAuth(`/empenhos?nota_credito_id=${id}&size=1000`);
+                    const empenhos = empenhosData.results;
+                    if (empenhos.length === 0) {
+                        openModal('Aviso', '<p>Não existem empenhos nesta Nota de Crédito para anular.</p>');
+                        return;
+                    }
+                    const empenhosOptions = empenhos.map(e => `<option value="${e.id}">${e.numero_ne}</option>`).join('');
+                    const formHTML = `<form id="anulacao-form"><div class="form-grid"><div class="form-field"><label for="empenho_id">Empenho a Anular</label><select name="empenho_id" required>${empenhosOptions}</select></div><div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div><div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">Criar Anulação</button></div></form>`;
+                    openModal('Adicionar Anulação de Empenho', formHTML, (modal, close) => {
+                        modal.querySelector('#anulacao-form').addEventListener('submit', async (ev) => {
+                            ev.preventDefault();
+                            const form = ev.target, btn = form.querySelector('button'), feedback = form.querySelector('#form-feedback');
+                            btn.disabled = true;
+                            const data = Object.fromEntries(new FormData(form).entries());
+                            data.valor = parseFloat(data.valor);
+                            data.empenho_id = parseInt(data.empenho_id);
+                            try {
+                                await fetchWithAuth('/anulacoes-empenho', { method: 'POST', body: JSON.stringify(data) });
+                                close();
+                                appMain.querySelector(`[data-action="view-extrato"][data-id="${id}"]`).click();
+                            } catch(error) {
+                                feedback.textContent = error.message;
+                                feedback.style.display = 'block';
+                                btn.disabled = false;
+                            }
+                        });
                     });
-                });
+                } catch (error) {
+                    openModal('Erro', `<p>Não foi possível carregar os empenhos para o formulário: ${error.message}</p>`);
+                }
             }
         });
 
