@@ -230,8 +230,7 @@ class EmpenhoCreate(EmpenhoBase):
 class EmpenhoInDB(EmpenhoBase):
     id: int
     secao_requisitante: SeçãoInDB
-    # Para evitar carregar a NC inteira aqui, podemos simplificar se necessário
-    # nota_credito: NotaCreditoInDB 
+    nota_credito: NotaCreditoInDB 
     class Config:
         from_attributes = True
 
@@ -266,7 +265,6 @@ class AuditLogInDB(BaseModel):
     class Config:
         from_attributes = True
 
-# Schemas para respostas paginadas
 class PaginatedNCS(BaseModel):
     total: int
     page: int
@@ -283,8 +281,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.1.0",
-              description="API para controle de execução orçamentária do 2º CGEO.")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -378,8 +375,8 @@ async def login_for_access_token(response: Response, form_data: OAuth2PasswordRe
         key="access_token",
         value=access_token,
         httponly=True,
-        samesite="lax",
-        secure=True,  # Em produção, o Cloudflare Pages usa HTTPS, então isto deve ser True
+        samesite="none",
+        secure=True,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     return {"message": "Login bem-sucedido"}
@@ -549,7 +546,7 @@ def update_nota_credito(nc_id: int, nc_update: NotaCreditoCreate, db: Session = 
 
     valor_ja_empenhado = db_nc.valor - db_nc.saldo_disponivel
     novo_saldo = nc_update.valor - valor_ja_empenhado
-    if novo_saldo < -0.01: # Usar uma pequena tolerância para erros de ponto flutuante
+    if novo_saldo < -0.01: 
         raise HTTPException(status_code=400, detail="O novo valor total é menor que o valor já empenhado nesta NC.")
 
     update_data = nc_update.dict()
@@ -604,7 +601,7 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
                 db_nc.saldo_disponivel = 0
                 db_nc.status = "Totalmente Empenhada"
 
-            db.commit() # Commit the nested transaction
+            db.commit() 
             log_audit_action(db, current_user.username, "EMPENHO_CREATED", f"Empenho '{empenho_in.numero_ne}' no valor de R$ {empenho_in.valor:,.2f} lançado na NC '{db_nc.numero_nc}'.")
 
     except IntegrityError:
@@ -612,7 +609,6 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
         raise HTTPException(status_code=400, detail="Um Empenho com este número de NE já existe.")
     except Exception as e:
         db.rollback()
-        # Raise the original exception if it's an HTTPException, otherwise a generic 500
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
@@ -726,6 +722,14 @@ def create_recolhimento(recolhimento_in: RecolhimentoSaldoBase, db: Session = De
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado: {str(e)}")
+        
+@app.get("/anulacoes-empenho", response_model=List[AnulacaoEmpenhoInDB], summary="Lista anulações por empenho", tags=["Anulações e Recolhimentos"])
+def read_anulacoes(empenho_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(AnulacaoEmpenho).filter(AnulacaoEmpenho.empenho_id == empenho_id).all()
+
+@app.get("/recolhimentos-saldo", response_model=List[RecolhimentoSaldoInDB], summary="Lista recolhimentos por nota de crédito", tags=["Anulações e Recolhimentos"])
+def read_recolhimentos(nota_credito_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(RecolhimentoSaldo).filter(RecolhimentoSaldo.nota_credito_id == nota_credito_id).all()
 
 # --- DASHBOARD E RELATÓRIOS ---
 
@@ -746,7 +750,7 @@ def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depen
 
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
 def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    data_limite = date.today() + timedelta(days=7) # Avisa com 7 dias de antecedência
+    data_limite = date.today() + timedelta(days=7) 
     avisos = db.query(NotaCredito).filter(
         NotaCredito.prazo_empenho <= data_limite,
         NotaCredito.status == "Ativa"
@@ -825,9 +829,56 @@ def get_relatorio_pdf(
 @app.get("/audit-logs", response_model=List[AuditLogInDB], summary="Retorna o log de auditoria do sistema (Apenas Admins)", tags=["Auditoria"])
 def read_audit_logs(
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 100,
     db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user)
 ):
     logs = db.query(AuditLog).order_by(desc(AuditLog.timestamp)).offset(skip).limit(limit).all()
     return logs
+
+# --- Função para popular a base de dados (para desenvolvimento) ---
+
+def create_first_admin_and_section():
+    """
+    Verifica se existe um utilizador admin e uma seção. Se não, cria-os.
+    Esta função é útil para a configuração inicial da base de dados.
+    """
+    db = SessionLocal()
+    try:
+        # Verifica se o utilizador admin existe
+        admin_user = db.query(User).filter(User.username == "admin").first()
+        if not admin_user:
+            print("Utilizador 'admin' não encontrado. A criar...")
+            hashed_password = get_password_hash("admin123")
+            admin = User(
+                username="admin", 
+                email="admin@salc.com", 
+                hashed_password=hashed_password, 
+                role=UserRole.ADMINISTRADOR
+            )
+            db.add(admin)
+            db.commit()
+            print("SUCESSO: Utilizador 'admin' criado com a senha 'admin123'.")
+        else:
+            print("Utilizador 'admin' já existe.")
+
+        # Verifica se existe pelo menos uma seção
+        any_section = db.query(Seção).first()
+        if not any_section:
+            print("Nenhuma seção encontrada. A criar seção padrão...")
+            default_section = Seção(nome="Seção Padrão")
+            db.add(default_section)
+            db.commit()
+            print("SUCESSO: 'Seção Padrão' criada.")
+        else:
+            print("Pelo menos uma seção já existe.")
+
+    finally:
+        db.close()
+
+# Bloco para executar a função de população quando o script é chamado diretamente.
+# Ex: python main.py
+if __name__ == "__main__":
+    print("A executar script de população inicial...")
+    create_first_admin_and_section()
+    print("Script de população concluído.")
