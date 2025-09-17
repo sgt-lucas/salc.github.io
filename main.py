@@ -875,10 +875,3 @@ def create_first_admin_and_section():
 
     finally:
         db.close()
-
-# Bloco para executar a função de população quando o script é chamado diretamente.
-# Ex: python main.py
-if __name__ == "__main__":
-    print("A executar script de população inicial...")
-    create_first_admin_and_section()
-    print("Script de população concluído.")
