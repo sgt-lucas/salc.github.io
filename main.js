@@ -73,9 +73,12 @@
                     throw new Error(errorData.detail || `Erro ${response.status}: Falha na requisição`);
                 }
                 if (options.responseType === 'blob') return response.blob();
-                // Para status 204 (No Content), a resposta não tem corpo
                 return response.status === 204 ? null : await response.json();
             } catch (error) {
+                // Se a busca falhar por problemas de rede, a mensagem de erro será mais clara.
+                if (error instanceof TypeError && error.message === 'Failed to fetch') {
+                    throw new Error('Erro de rede. Não foi possível conectar ao servidor.');
+                }
                 throw error;
             }
         }
@@ -201,7 +204,7 @@
                     if (el) el.textContent = 'Erro';
                 });
                 const avisoEl = document.getElementById('aviso-content');
-                if(avisoEl) avisoEl.innerHTML = `<p class="error-message">Não foi possível carregar os avisos.</p>`;
+                if(avisoEl) avisoEl.innerHTML = `<p class="error-message">Não foi possível carregar os avisos: ${error.message}</p>`;
             }
         }
 
@@ -522,7 +525,7 @@
         // ========================================================================
         
         appMain.addEventListener('click', async (e) => {
-            const targetButton = e.target.closest('button.btn-icon');
+            const targetButton = e.target.closest('button[data-action]');
             if (!targetButton) return;
             const { action, id } = targetButton.dataset;
 
@@ -651,7 +654,7 @@
                     const empenhosOptions = empenhos.map(e => `<option value="${e.id}">${e.numero_ne}</option>`).join('');
                     const formHTML = `<form id="anulacao-form"><div class="form-grid"><div class="form-field"><label for="empenho_id">Empenho a Anular</label><select name="empenho_id" required>${empenhosOptions}</select></div><div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div><div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">Criar Anulação</button></div></form>`;
                     openModal('Adicionar Anulação de Empenho', formHTML, (modal, close) => {
-                        modal.querySelector('#anulacao-form').addEventListener('submit', async (ev) => {
+                         modal.querySelector('#anulacao-form').addEventListener('submit', async (ev) => {
                             ev.preventDefault();
                             const form = ev.target, btn = form.querySelector('button'), feedback = form.querySelector('#form-feedback');
                             btn.disabled = true;
