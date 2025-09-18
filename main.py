@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase,
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
+import pandas as pd
 
 # --- Segurança e Autenticação ---
 from jose import JWTError, jwt
@@ -688,6 +689,77 @@ def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Dep
         NotaCredito.status == "Ativa"
     ).order_by(NotaCredito.prazo_empenho).all()
     return avisos
+
+def get_all_data_for_report(db: Session, model, filters: dict):
+    query = db.query(model)
+    if model == NotaCredito:
+        query = query.options(joinedload(NotaCredito.secao_responsavel))
+        if filters.get("plano_interno"): query = query.filter(NotaCredito.plano_interno.ilike(f"%{filters['plano_interno']}%"))
+        if filters.get("nd"): query = query.filter(NotaCredito.nd.ilike(f"%{filters['nd']}%"))
+        if filters.get("secao_responsavel_id"): query = query.filter(NotaCredito.secao_responsavel_id == filters['secao_responsavel_id'])
+        if filters.get("status"): query = query.filter(NotaCredito.status == filters['status'])
+        query = query.order_by(desc(NotaCredito.data_chegada))
+    elif model == Empenho:
+        query = query.options(joinedload(Empenho.secao_requisitante), joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel))
+        query = query.order_by(desc(Empenho.data_empenho))
+    return query.all()
+
+@app.get("/relatorios/excel/notas-credito", summary="Exporta Notas de Crédito para Excel", tags=["Relatórios"])
+def export_nc_excel(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
+):
+    filters = {
+        "plano_interno": plano_interno, "nd": nd,
+        "secao_responsavel_id": secao_responsavel_id, "status": status
+    }
+    ncs = get_all_data_for_report(db, NotaCredito, filters)
+    
+    data_to_export = [{
+        "Nº da NC": nc.numero_nc, "Plano Interno": nc.plano_interno, "ND": nc.nd,
+        "Seção Responsável": nc.secao_responsavel.nome, "Valor Original (R$)": nc.valor,
+        "Saldo Disponível (R$)": nc.saldo_disponivel, "Status": nc.status,
+        "Data de Chegada": nc.data_chegada.strftime('%d/%m/%Y'),
+        "Prazo para Empenho": nc.prazo_empenho.strftime('%d/%m/%Y'),
+        "Esfera": nc.esfera, "Fonte": nc.fonte, "PTRES": nc.ptres,
+        "Descrição": nc.descricao
+    } for nc in ncs]
+
+    df = pd.DataFrame(data_to_export)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Notas de Crédito')
+    
+    log_audit_action(db, current_user.username, "NC_EXPORT_EXCEL", f"Exportação de {len(ncs)} NCs.")
+    db.commit()
+
+    headers = {'Content-Disposition': 'attachment; filename="relatorio_notas_credito.xlsx"'}
+    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
+@app.get("/relatorios/excel/empenhos", summary="Exporta Empenhos para Excel", tags=["Relatórios"])
+def export_empenhos_excel(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    empenhos = get_all_data_for_report(db, Empenho, {})
+    
+    data_to_export = [{
+        "Nº do Empenho": e.numero_ne, "NC Associada": e.nota_credito.numero_nc,
+        "Seção Requisitante": e.secao_requisitante.nome, "Valor (R$)": e.valor,
+        "Data do Empenho": e.data_empenho.strftime('%d/%m/%Y'),
+        "Observação": e.observacao
+    } for e in empenhos]
+    
+    df = pd.DataFrame(data_to_export)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Empenhos')
+        
+    log_audit_action(db, current_user.username, "EMPENHO_EXPORT_EXCEL", f"Exportação de {len(empenhos)} empenhos.")
+    db.commit()
+
+    headers = {'Content-Disposition': 'attachment; filename="relatorio_empenhos.xlsx"'}
+    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
 
 @app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF", tags=["Relatórios"])
 def get_relatorio_pdf(
