@@ -108,11 +108,11 @@ class Empenho(Base):
     __tablename__ = "empenhos"
     id = Column(Integer, primary_key=True, index=True)
     numero_ne = Column(String, unique=True, nullable=False, index=True)
-    valor = Column(Float, nullable=False)  # Agora representa o SALDO ATUAL do empenho
+    valor = Column(Float, nullable=False)
     data_empenho = Column(Date)
     observacao = Column(String, nullable=True)
-    status = Column(String, nullable=True, index=True) # Novo campo para status
-    is_fake = Column(Boolean, default=False, nullable=False) # Novo campo para empenho FAKE
+    status = Column(String, nullable=True, index=True)
+    is_fake = Column(Boolean, default=False, nullable=False)
     nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
     secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"))
 
@@ -285,7 +285,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.4.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -639,7 +639,6 @@ def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_
     if not db_empenho:
         raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
     
-    # O saldo do empenho é o seu valor atual
     if anulacao_in.valor > db_empenho.valor:
         raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {db_empenho.valor:,.2f}).")
     
@@ -649,7 +648,6 @@ def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_
         if db_nc.status == "Totalmente Empenhada":
             db_nc.status = "Ativa"
 
-    # Debita o valor do empenho e atualiza o status
     db_empenho.valor -= anulacao_in.valor
     if db_empenho.valor < 0.01:
         db_empenho.valor = 0
@@ -694,21 +692,20 @@ def read_recolhimentos(nota_credito_id: int, db: Session = Depends(get_db), curr
 
 @app.get("/dashboard/kpis", summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
 def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    saldo_total_nc = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
-    ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
-    
-    # O valor empenhado total é a soma dos saldos atuais de todos os empenhos
-    valor_empenhado_liquido = db.query(func.sum(Empenho.valor)).scalar() or 0.0
-    
-    # Novo KPI para empenhos FAKE
-    valor_total_empenhos_fake = db.query(func.sum(Empenho.valor)).filter(Empenho.is_fake == True).scalar() or 0.0
+    try:
+        saldo_total_nc = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
+        ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
+        
+        valor_total_empenhos_fake = db.query(func.sum(Empenho.valor)).filter(Empenho.is_fake == True).scalar() or 0.0
 
-    return {
-        "saldo_disponivel_total": saldo_total_nc,
-        "valor_empenhado_total": valor_empenhado_liquido,
-        "ncs_ativas": ncs_ativas,
-        "valor_total_empenhos_fake": valor_total_empenhos_fake
-    }
+        return {
+            "saldo_disponivel_total": saldo_total_nc,
+            "ncs_ativas": ncs_ativas,
+            "valor_total_empenhos_fake": valor_total_empenhos_fake
+        }
+    except Exception as e:
+        print(f"ERRO EM /dashboard/kpis: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno ao processar os KPIs do dashboard.")
 
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
 def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
