@@ -89,6 +89,22 @@ tbody tr:hover { background-color: #e9ecef; }
 .btn-icon { background: none; border: none; cursor: pointer; color: var(--cor-texto-secundario); font-size: 1.1rem; padding: 0.5rem; }
 .btn-icon:hover { color: var(--cor-primaria); }
 .btn-delete:hover { color: var(--cor-erro); }
+
+/* Novo estilo para o botão de anular NE */
+.btn-anular {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
+    background-color: #fff0f1;
+    border: 1px solid var(--cor-erro);
+    color: var(--cor-erro);
+    border-radius: 5px;
+    font-weight: 600;
+}
+.btn-anular:hover {
+    background-color: var(--cor-erro);
+    color: white;
+}
+
 .status { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 700; color: white; }
 .status-ativa { background-color: var(--cor-sucesso); }
 .status-totalmente-empenhada { background-color: var(--cor-texto-secundario); }
