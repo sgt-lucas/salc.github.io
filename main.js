@@ -11,6 +11,8 @@
         
         const appState = {
             secoes: [],
+            pis: [], // Adicionado para guardar a lista de Planos Internos
+            nds: [], // Adicionado para guardar a lista de Naturezas de Despesa
             notasCredito: { total: 0, page: 1, size: 10, results: [] },
             empenhos: { total: 0, page: 1, size: 10, results: [] },
             users: [],
@@ -126,10 +128,20 @@
         
         const viewRenderer = {
             async dashboard(container) {
+                 // Busca de dados essenciais para os filtros, se ainda não estiverem no estado
                 if (appState.secoes.length === 0) {
                     try { appState.secoes = await apiService.get('/secoes'); } 
                     catch (error) { console.error("Erro ao carregar seções:", error); }
                 }
+                if (appState.pis.length === 0) {
+                    try { appState.pis = await apiService.get('/notas-credito/distinct/plano-interno'); }
+                     catch (error) { console.error("Erro ao carregar Planos Internos:", error); }
+                }
+                if (appState.nds.length === 0) {
+                    try { appState.nds = await apiService.get('/notas-credito/distinct/nd'); }
+                     catch (error) { console.error("Erro ao carregar Naturezas de Despesa:", error); }
+                }
+
                 container.innerHTML = `
                     <div class="view-header"><h1>Dashboard</h1></div>
                     <div class="dashboard-grid">
@@ -139,20 +151,34 @@
                     </div>
                     <div class="card aviso-card"><h3><i class="fas fa-exclamation-triangle"></i> Avisos Importantes (Próximos 7 dias)</h3><div id="aviso-content">A carregar...</div></div>
                     <div class="card">
-                        <div class="view-header"><h3>Gerar Relatório em PDF</h3><button id="generate-report-btn" class="btn btn-primary"><i class="fas fa-file-pdf"></i> Gerar Relatório</button></div>
+                        <div class="view-header">
+                            <h3>Gerar Relatórios</h3>
+                            <div class="report-buttons">
+                                <button id="generate-report-excel-btn" class="btn"><i class="fas fa-file-excel"></i> Exportar para Excel</button>
+                                <button id="generate-report-pdf-btn" class="btn btn-primary" style="margin-left: 1rem;"><i class="fas fa-file-pdf"></i> Gerar PDF</button>
+                            </div>
+                        </div>
                         <div class="filters">
-                            <div class="filter-group"><label for="report-filter-pi">Plano Interno</label><input type="text" id="report-filter-pi" placeholder="Opcional"></div>
-                            <div class="filter-group"><label for="report-filter-nd">Natureza de Despesa</label><input type="text" id="report-filter-nd" placeholder="Opcional"></div>
+                            <div class="filter-group"><label for="report-filter-pi">Plano Interno</label><select id="report-filter-pi"><option value="">Todos</option></select></div>
+                            <div class="filter-group"><label for="report-filter-nd">Natureza de Despesa</label><select id="report-filter-nd"><option value="">Todas</option></select></div>
                             <div class="filter-group"><label for="report-filter-secao">Seção Responsável</label><select id="report-filter-secao"><option value="">Todas</option></select></div>
                             <div class="filter-group"><label for="report-filter-status">Status</label><select id="report-filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
                         </div>
                         <div class="form-field" style="margin-top: 1rem;"><input type="checkbox" id="report-incluir-detalhes" name="incluir-detalhes"><label for="report-incluir-detalhes" style="display: inline-block; margin-left: 0.5rem;">Incluir detalhes de empenhos e recolhimentos</label></div>
                     </div>`;
 
+                // Popula os seletores de filtro
+                const piSelect = container.querySelector('#report-filter-pi');
+                const ndSelect = container.querySelector('#report-filter-nd');
                 const secaoSelect = container.querySelector('#report-filter-secao');
+                
+                if (piSelect) piSelect.innerHTML = '<option value="">Todos</option>' + appState.pis.map(pi => `<option value="${pi}">${pi}</option>`).join('');
+                if (ndSelect) ndSelect.innerHTML = '<option value="">Todas</option>' + appState.nds.map(nd => `<option value="${nd}">${nd}</option>`).join('');
                 if (secaoSelect) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
                 
-                container.querySelector('#generate-report-btn').addEventListener('click', eventHandlers.reports.generatePdf);
+                // Adiciona os event listeners para os botões de relatório
+                container.querySelector('#generate-report-pdf-btn').addEventListener('click', eventHandlers.reports.generatePdf);
+                container.querySelector('#generate-report-excel-btn').addEventListener('click', eventHandlers.reports.generateExcel);
                 
                 try {
                     const [kpis, avisos] = await Promise.all([
@@ -294,8 +320,8 @@
                             <td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
                             <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                             <td class="actions">
-                                <button class="btn-icon" data-action="add-anulacao" data-id="${e.id}" data-numero="${e.numero_ne}" title="Anular Empenho"><i class="fas fa-undo"></i></button>
-                                ${currentUser.role === 'ADMINISTRADOR' ? `<button class="btn-icon btn-delete" data-action="delete-empenho" data-id="${e.id}" data-numero="${e.numero_ne}" title="Excluir Empenho"><i class="fas fa-trash"></i></button>` : ''}
+                                <button class="btn btn-anular" data-action="add-anulacao" data-id="${e.id}" data-numero="${e.numero_ne}">Anular NE</button>
+                                ${currentUser.role === 'ADMINISTRADOR' ? `<button class="btn-icon btn-delete" data-action="delete-empenho" data-id="${e.id}" data-numero="${e.numero_ne}" title="Excluir Empenho" style="margin-left: 0.5rem;"><i class="fas fa-trash"></i></button>` : ''}
                             </td>
                         </tr>`).join('');
                      uiComponents.renderPagination(document.getElementById('empenhos-pagination-container'), data, (newPage) => this.loadEmpenhosTable(newPage));
@@ -637,7 +663,7 @@
             
             reports: {
                 async generatePdf() {
-                    const btn = document.getElementById('generate-report-btn');
+                    const btn = document.getElementById('generate-report-pdf-btn');
                     btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A gerar...`;
                     const filters = {
                         plano_interno: document.getElementById('report-filter-pi').value || undefined,
@@ -654,7 +680,30 @@
                     } catch (error) {
                         uiComponents.openModal('Erro ao Gerar Relatório', `<p>${error.message}</p>`);
                     } finally {
-                        btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-pdf"></i> Gerar Relatório`;
+                        btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-pdf"></i> Gerar PDF`;
+                    }
+                },
+
+                async generateExcel() {
+                    const btn = document.getElementById('generate-report-excel-btn');
+                    btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A exportar...`;
+                    const filters = {
+                        plano_interno: document.getElementById('report-filter-pi').value || undefined,
+                        nd: document.getElementById('report-filter-nd').value || undefined,
+                        secao_responsavel_id: document.getElementById('report-filter-secao').value || undefined,
+                        status: document.getElementById('report-filter-status').value || undefined,
+                        incluir_detalhes: document.getElementById('report-incluir-detalhes').checked,
+                    };
+                    Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]);
+                    const params = new URLSearchParams(filters).toString();
+                    try {
+                        const blob = await apiService.download(`/relatorios/excel/geral?${params}`);
+                        eventHandlers.handleFileDownload(blob, 'relatorio_geral_salc.xlsx');
+                    } catch (error)
+                    {
+                        uiComponents.openModal('Erro ao Exportar Relatório', `<p>${error.message}</p>`);
+                    } finally {
+                        btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-excel"></i> Exportar para Excel`;
                     }
                 },
 
