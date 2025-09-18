@@ -69,9 +69,10 @@ a:hover { text-decoration: underline; }
 .card { background: var(--cor-superficie); padding: 1.5rem; border-radius: 8px; box-shadow: var(--sombra); margin-bottom: 2rem; }
 .view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
 .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; }
+.dashboard-grid-3-cols { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .kpi-card h3 { font-size: 1rem; color: var(--cor-texto-secundario); font-weight: 500; }
 .kpi-card p { font-size: 2rem; font-weight: 700; color: var(--cor-primaria); }
-.kpi-card.kpi-fake p { color: var(--cor-aviso); } /* Cor para o KPI de empenhos FAKE */
+.kpi-card.kpi-fake p { color: var(--cor-aviso); }
 .aviso-card { background-color: var(--cor-aviso-fundo); border-left: 5px solid var(--cor-aviso); }
 .aviso-card h3 { color: #664d03; display: flex; align-items: center; gap: 0.5rem; }
 .chart-card { min-height: 400px; }
@@ -116,7 +117,7 @@ tbody tr.empenho-fake:hover { background-color: #fff3cd; }
 .status-ativa { background-color: var(--cor-sucesso); }
 .status-totalmente-empenhada { background-color: var(--cor-texto-secundario); }
 .status-expirada { background-color: var(--cor-erro); }
-.status-anulacao-parcial-realizada { background-color: #fd7e14; } /* Laranja */
+.status-anulacao-parcial-realizada { background-color: #fd7e14; }
 .status-anulacao-total-realizada { background-color: var(--cor-texto-secundario); }
 .status-fake { background-color: var(--cor-aviso); color: var(--cor-texto-principal); }
 .status-ok { color: var(--cor-texto-secundario); }
