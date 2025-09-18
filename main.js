@@ -142,9 +142,8 @@
 
                 container.innerHTML = `
                     <div class="view-header"><h1>Dashboard</h1></div>
-                    <div class="dashboard-grid">
+                    <div class="dashboard-grid dashboard-grid-3-cols">
                         <div class="card kpi-card"><h3>Saldo Disponível Total</h3><p id="kpi-saldo-total">A carregar...</p></div>
-                        <div class="card kpi-card"><h3>Total Empenhado (Real)</h3><p id="kpi-valor-empenhado">A carregar...</p></div>
                         <div class="card kpi-card"><h3>NCs Ativas</h3><p id="kpi-ncs-ativas">A carregar...</p></div>
                         <div class="card kpi-card kpi-fake"><h3>Total Empenhado (FAKE)</h3><p id="kpi-valor-empenhado-fake">A carregar...</p></div>
                     </div>
@@ -183,7 +182,6 @@
                         apiService.get('/dashboard/avisos')
                     ]);
                     document.getElementById('kpi-saldo-total').textContent = kpis.saldo_disponivel_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-                    document.getElementById('kpi-valor-empenhado').textContent = kpis.valor_empenhado_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                     document.getElementById('kpi-valor-empenhado-fake').textContent = kpis.valor_total_empenhos_fake.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                     document.getElementById('kpi-ncs-ativas').textContent = kpis.ncs_ativas;
 
@@ -201,7 +199,7 @@
                     }
                 } catch (error) {
                     console.error("Erro ao carregar dados do dashboard:", error);
-                    ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-valor-empenhado-fake', 'kpi-ncs-ativas'].forEach(id => {
+                    ['kpi-saldo-total', 'kpi-valor-empenhado-fake', 'kpi-ncs-ativas'].forEach(id => {
                         const el = document.getElementById(id);
                         if (el) el.textContent = 'Erro';
                     });
@@ -229,7 +227,6 @@
                     <div class="table-container card"><table id="nc-table"><thead><tr><th>Nº da NC</th><th>Plano Interno</th><th>ND</th><th>Seção</th><th>Valor Original</th><th>Saldo Disponível</th><th>Prazo</th><th>Status</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
                     <div id="nc-pagination-container"></div>`;
                 
-                // Popula os seletores de filtro
                 const piSelect = container.querySelector('#filter-pi');
                 const ndSelect = container.querySelector('#filter-nd');
                 const secaoSelect = container.querySelector('#filter-secao');
@@ -320,7 +317,7 @@
                         document.getElementById('empenhos-pagination-container').innerHTML = ''; return;
                     }
                     tableBody.innerHTML = data.results.map(e => {
-                        const statusClass = e.status ? `status-${e.status.toLowerCase().replace(/ /g, '-')}` : '';
+                        const statusClass = e.status ? `status-${e.status.toLowerCase().replace(/ /g, '-')}` : 'status-ok';
                         const statusText = e.status || (e.is_fake ? 'FAKE' : 'OK');
                         const fakeClass = e.is_fake ? 'empenho-fake' : '';
 
@@ -549,23 +546,25 @@
                     btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A salvar...`; feedback.style.display = 'none';
                     const id = form.dataset.id;
                     const method = id ? 'put' : 'post', endpoint = id ? `/empenhos/${id}` : '/empenhos';
-                    const data = Object.fromEntries(new FormData(form));
+                    
+                    const formData = new FormData(form);
+                    const data = Object.fromEntries(formData);
                     data.valor = parseFloat(data.valor);
                     data.nota_credito_id = parseInt(data.nota_credito_id);
                     data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
-                    data.is_fake = form.querySelector('[name="is_fake"]').checked;
+                    data.is_fake = formData.has('is_fake'); // Corrigido para verificar se a checkbox existe
                     
                     try {
                         await apiService[method](endpoint, data);
                         closeModalFunc();
                         await viewRenderer.loadEmpenhosTable(appState.empenhos.page);
-                        await viewRenderer.dashboard(DOM.appMain); // Recarrega o dashboard para atualizar o KPI
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
                     } finally {
                         btn.disabled = false; btn.innerHTML = id ? 'Salvar Alterações' : 'Criar Empenho';
                     }
                 },
+
 
                 delete(id, numero) {
                     uiComponents.showConfirmationModal('Excluir Empenho', `Tem a certeza de que deseja excluir o empenho "${numero}"?`, async () => {
@@ -611,7 +610,7 @@
                             <div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div>
                             <div class="form-field"><label for="nota_credito_id">Nota de Crédito Associada</label><select name="nota_credito_id" required>${notasOptions}</select></div>
                             <div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div>
-                            <div class="form-field" style="align-self: center;"><input type="checkbox" name="is_fake" ${empenho.is_fake ? 'checked' : ''}><label for="is_fake" style="display: inline-block; margin-left: 0.5rem;">Este empenho é FAKE</label></div>
+                            <div class="form-field" style="align-self: center;"><input type="checkbox" id="is_fake" name="is_fake" ${empenho.is_fake ? 'checked' : ''}><label for="is_fake" style="display: inline-block; margin-left: 0.5rem;">Este empenho é FAKE</label></div>
                             <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao">${empenho.observacao || ''}</textarea></div>
                         </div>
                         <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
