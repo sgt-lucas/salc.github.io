@@ -11,8 +11,8 @@
         
         const appState = {
             secoes: [],
-            pis: [], // Adicionado para guardar a lista de Planos Internos
-            nds: [], // Adicionado para guardar a lista de Naturezas de Despesa
+            pis: [], 
+            nds: [], 
             notasCredito: { total: 0, page: 1, size: 10, results: [] },
             empenhos: { total: 0, page: 1, size: 10, results: [] },
             users: [],
@@ -61,7 +61,6 @@
                     throw error;
                 }
             },
-            // Funções específicas da API para melhor organização
             get: (endpoint) => apiService.fetch(endpoint),
             post: (endpoint, body) => apiService.fetch(endpoint, { method: 'POST', body: JSON.stringify(body) }),
             put: (endpoint, body) => apiService.fetch(endpoint, { method: 'PUT', body: JSON.stringify(body) }),
@@ -128,7 +127,6 @@
         
         const viewRenderer = {
             async dashboard(container) {
-                 // Busca de dados essenciais para os filtros, se ainda não estiverem no estado
                 if (appState.secoes.length === 0) {
                     try { appState.secoes = await apiService.get('/secoes'); } 
                     catch (error) { console.error("Erro ao carregar seções:", error); }
@@ -146,8 +144,9 @@
                     <div class="view-header"><h1>Dashboard</h1></div>
                     <div class="dashboard-grid">
                         <div class="card kpi-card"><h3>Saldo Disponível Total</h3><p id="kpi-saldo-total">A carregar...</p></div>
-                        <div class="card kpi-card"><h3>Total Empenhado</h3><p id="kpi-valor-empenhado">A carregar...</p></div>
+                        <div class="card kpi-card"><h3>Total Empenhado (Real)</h3><p id="kpi-valor-empenhado">A carregar...</p></div>
                         <div class="card kpi-card"><h3>NCs Ativas</h3><p id="kpi-ncs-ativas">A carregar...</p></div>
+                        <div class="card kpi-card kpi-fake"><h3>Total Empenhado (FAKE)</h3><p id="kpi-valor-empenhado-fake">A carregar...</p></div>
                     </div>
                     <div class="card aviso-card"><h3><i class="fas fa-exclamation-triangle"></i> Avisos Importantes (Próximos 7 dias)</h3><div id="aviso-content">A carregar...</div></div>
                     <div class="card">
@@ -167,7 +166,6 @@
                         <div class="form-field" style="margin-top: 1rem;"><input type="checkbox" id="report-incluir-detalhes" name="incluir-detalhes"><label for="report-incluir-detalhes" style="display: inline-block; margin-left: 0.5rem;">Incluir detalhes de empenhos e recolhimentos</label></div>
                     </div>`;
 
-                // Popula os seletores de filtro
                 const piSelect = container.querySelector('#report-filter-pi');
                 const ndSelect = container.querySelector('#report-filter-nd');
                 const secaoSelect = container.querySelector('#report-filter-secao');
@@ -176,7 +174,6 @@
                 if (ndSelect) ndSelect.innerHTML = '<option value="">Todas</option>' + appState.nds.map(nd => `<option value="${nd}">${nd}</option>`).join('');
                 if (secaoSelect) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
                 
-                // Adiciona os event listeners para os botões de relatório
                 container.querySelector('#generate-report-pdf-btn').addEventListener('click', eventHandlers.reports.generatePdf);
                 container.querySelector('#generate-report-excel-btn').addEventListener('click', eventHandlers.reports.generateExcel);
                 
@@ -187,7 +184,9 @@
                     ]);
                     document.getElementById('kpi-saldo-total').textContent = kpis.saldo_disponivel_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                     document.getElementById('kpi-valor-empenhado').textContent = kpis.valor_empenhado_total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+                    document.getElementById('kpi-valor-empenhado-fake').textContent = kpis.valor_total_empenhos_fake.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                     document.getElementById('kpi-ncs-ativas').textContent = kpis.ncs_ativas;
+
                     const avisoContainer = document.getElementById('aviso-content');
                     if (avisos.length > 0) {
                         avisoContainer.innerHTML = avisos.map(nc => {
@@ -202,7 +201,7 @@
                     }
                 } catch (error) {
                     console.error("Erro ao carregar dados do dashboard:", error);
-                    ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-ncs-ativas'].forEach(id => {
+                    ['kpi-saldo-total', 'kpi-valor-empenhado', 'kpi-valor-empenhado-fake', 'kpi-ncs-ativas'].forEach(id => {
                         const el = document.getElementById(id);
                         if (el) el.textContent = 'Erro';
                     });
@@ -221,8 +220,8 @@
                         </div>
                     </div>
                     <div class="filters card">
-                        <div class="filter-group"><label for="filter-pi">Plano Interno</label><input type="text" id="filter-pi" placeholder="Filtrar por PI"></div>
-                        <div class="filter-group"><label for="filter-nd">Natureza de Despesa</label><input type="text" id="filter-nd" placeholder="Filtrar por ND"></div>
+                        <div class="filter-group"><label for="filter-pi">Plano Interno</label><select id="filter-pi"><option value="">Todos</option></select></div>
+                        <div class="filter-group"><label for="filter-nd">Natureza de Despesa</label><select id="filter-nd"><option value="">Todas</option></select></div>
                         <div class="filter-group"><label for="filter-secao">Seção Responsável</label><select id="filter-secao"><option value="">Todas</option></select></div>
                         <div class="filter-group"><label for="filter-status">Status</label><select id="filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
                         <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
@@ -230,8 +229,14 @@
                     <div class="table-container card"><table id="nc-table"><thead><tr><th>Nº da NC</th><th>Plano Interno</th><th>ND</th><th>Seção</th><th>Valor Original</th><th>Saldo Disponível</th><th>Prazo</th><th>Status</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
                     <div id="nc-pagination-container"></div>`;
                 
+                // Popula os seletores de filtro
+                const piSelect = container.querySelector('#filter-pi');
+                const ndSelect = container.querySelector('#filter-nd');
                 const secaoSelect = container.querySelector('#filter-secao');
-                if (appState.secoes.length > 0) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
+                
+                if (piSelect) piSelect.innerHTML = '<option value="">Todos</option>' + appState.pis.map(pi => `<option value="${pi}">${pi}</option>`).join('');
+                if (ndSelect) ndSelect.innerHTML = '<option value="">Todas</option>' + appState.nds.map(nd => `<option value="${nd}">${nd}</option>`).join('');
+                if (secaoSelect) secaoSelect.innerHTML = '<option value="">Todas</option>' + appState.secoes.map(s => `<option value="${s.id}">${s.nome}</option>`).join('');
                 
                 container.querySelector('#filter-pi').value = appState.currentFilters.nc.plano_interno || '';
                 container.querySelector('#filter-nd').value = appState.currentFilters.nc.nd || '';
@@ -294,7 +299,7 @@
                             <button id="add-empenho-btn" class="btn btn-primary" style="margin-left: 1rem;"><i class="fas fa-plus"></i> Novo Empenho</button>
                         </div>
                     </div>
-                    <div class="table-container card"><table id="empenhos-table"><thead><tr><th>Nº do Empenho</th><th>Nº da NC Associada</th><th>Seção Requisitante</th><th>Valor</th><th>Data</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
+                    <div class="table-container card"><table id="empenhos-table"><thead><tr><th>Nº do Empenho</th><th>Nº da NC Associada</th><th>Seção Requisitante</th><th>Valor do Saldo</th><th>Status</th><th>Data</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
                     <div id="empenhos-pagination-container"></div>`;
                 
                 await this.loadEmpenhosTable(page);
@@ -305,28 +310,35 @@
             async loadEmpenhosTable(page = 1) {
                 const tableBody = document.querySelector('#empenhos-table tbody');
                 if (!tableBody) return;
-                tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">A buscar dados...</td></tr>`;
+                tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">A buscar dados...</td></tr>`;
                 try {
                     const params = new URLSearchParams({ page, size: appState.empenhos.size });
                     const data = await apiService.get(`/empenhos?${params.toString()}`);
                     appState.empenhos = data;
                     if (data.results.length === 0) {
-                        tableBody.innerHTML = `<tr><td colspan="6" style="text-align:center;">Nenhum empenho encontrado.</td></tr>`;
+                        tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Nenhum empenho encontrado.</td></tr>`;
                         document.getElementById('empenhos-pagination-container').innerHTML = ''; return;
                     }
-                    tableBody.innerHTML = data.results.map(e => `
-                        <tr data-id="${e.id}">
+                    tableBody.innerHTML = data.results.map(e => {
+                        const statusClass = e.status ? `status-${e.status.toLowerCase().replace(/ /g, '-')}` : '';
+                        const statusText = e.status || (e.is_fake ? 'FAKE' : 'OK');
+                        const fakeClass = e.is_fake ? 'empenho-fake' : '';
+
+                        return `
+                        <tr data-id="${e.id}" class="${fakeClass}">
                             <td>${e.numero_ne}</td><td>${e.nota_credito.numero_nc}</td><td>${e.secao_requisitante.nome}</td>
                             <td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                            <td><span class="status ${statusClass}">${statusText}</span></td>
                             <td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td>
                             <td class="actions">
                                 <button class="btn btn-anular" data-action="add-anulacao" data-id="${e.id}" data-numero="${e.numero_ne}">Anular NE</button>
                                 ${currentUser.role === 'ADMINISTRADOR' ? `<button class="btn-icon btn-delete" data-action="delete-empenho" data-id="${e.id}" data-numero="${e.numero_ne}" title="Excluir Empenho" style="margin-left: 0.5rem;"><i class="fas fa-trash"></i></button>` : ''}
                             </td>
-                        </tr>`).join('');
+                        </tr>`;
+                    }).join('');
                      uiComponents.renderPagination(document.getElementById('empenhos-pagination-container'), data, (newPage) => this.loadEmpenhosTable(newPage));
                 } catch (error) {
-                    tableBody.innerHTML = `<tr><td colspan="6" class="error-message">Erro ao carregar empenhos: ${error.message}</td></tr>`;
+                    tableBody.innerHTML = `<tr><td colspan="7" class="error-message">Erro ao carregar empenhos: ${error.message}</td></tr>`;
                 }
             },
 
@@ -479,7 +491,6 @@
                         const empenhosData = await apiService.get(`/empenhos?nota_credito_id=${id}&size=1000`);
                         const recolhimentos = await apiService.get(`/recolhimentos-saldo?nota_credito_id=${id}`);
                         
-                        // *** OTIMIZAÇÃO COM PROMISE.ALL ***
                         const anulacoesPromises = empenhosData.results.map(e => apiService.get(`/anulacoes-empenho?empenho_id=${e.id}`));
                         const allAnulacoesArrays = await Promise.all(anulacoesPromises);
                         const allAnulacoes = allAnulacoesArrays.flat();
@@ -542,11 +553,13 @@
                     data.valor = parseFloat(data.valor);
                     data.nota_credito_id = parseInt(data.nota_credito_id);
                     data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
+                    data.is_fake = form.querySelector('[name="is_fake"]').checked;
                     
                     try {
                         await apiService[method](endpoint, data);
                         closeModalFunc();
                         await viewRenderer.loadEmpenhosTable(appState.empenhos.page);
+                        await viewRenderer.dashboard(DOM.appMain); // Recarrega o dashboard para atualizar o KPI
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
                     } finally {
@@ -592,7 +605,18 @@
                 const isEditing = !!empenho.id;
                 const notasOptions = notasCredito.map(nc => `<option value="${nc.id}" ${nc.id === empenho.nota_credito_id ? 'selected' : ''}>${nc.numero_nc} (Saldo: ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})</option>`).join('');
                 const secoesOptions = secoes.map(s => `<option value="${s.id}" ${s.id === empenho.secao_requisitante_id ? 'selected' : ''}>${s.nome}</option>`).join('');
-                return `<form id="empenho-form" data-id="${isEditing ? empenho.id : ''}" novalidate><div class="form-grid"><div class="form-field"><label for="numero_ne">Número do Empenho (NE)</label><input type="text" name="numero_ne" value="${empenho.numero_ne || ''}" required></div><div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${empenho.valor || ''}" required></div><div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div><div class="form-field"><label for="nota_credito_id">Nota de Crédito Associada</label><select name="nota_credito_id" required>${notasOptions}</select></div><div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao">${empenho.observacao || ''}</textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Empenho'}</button></div></form>`;
+                return `<form id="empenho-form" data-id="${isEditing ? empenho.id : ''}" novalidate><div class="form-grid">
+                            <div class="form-field"><label for="numero_ne">Número do Empenho (NE)</label><input type="text" name="numero_ne" value="${empenho.numero_ne || ''}" required></div>
+                            <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${empenho.valor || ''}" required></div>
+                            <div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div>
+                            <div class="form-field"><label for="nota_credito_id">Nota de Crédito Associada</label><select name="nota_credito_id" required>${notasOptions}</select></div>
+                            <div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div>
+                            <div class="form-field" style="align-self: center;"><input type="checkbox" name="is_fake" ${empenho.is_fake ? 'checked' : ''}><label for="is_fake" style="display: inline-block; margin-left: 0.5rem;">Este empenho é FAKE</label></div>
+                            <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao">${empenho.observacao || ''}</textarea></div>
+                        </div>
+                        <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
+                        <div class="form-actions"><button type="submit" class="btn btn-primary">${isEditing ? 'Salvar Alterações' : 'Criar Empenho'}</button></div>
+                        </form>`;
             },
 
             admin: {
