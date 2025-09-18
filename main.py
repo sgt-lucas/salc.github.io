@@ -8,7 +8,7 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc, Boolean
 from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
@@ -108,9 +108,11 @@ class Empenho(Base):
     __tablename__ = "empenhos"
     id = Column(Integer, primary_key=True, index=True)
     numero_ne = Column(String, unique=True, nullable=False, index=True)
-    valor = Column(Float, nullable=False)
+    valor = Column(Float, nullable=False)  # Agora representa o SALDO ATUAL do empenho
     data_empenho = Column(Date)
     observacao = Column(String, nullable=True)
+    status = Column(String, nullable=True, index=True) # Novo campo para status
+    is_fake = Column(Boolean, default=False, nullable=False) # Novo campo para empenho FAKE
     nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
     secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"))
 
@@ -223,12 +225,14 @@ class EmpenhoBase(BaseModel):
     observacao: Optional[str] = None
     nota_credito_id: int
     secao_requisitante_id: int
+    is_fake: bool = False
 
 class EmpenhoCreate(EmpenhoBase):
     pass
 
 class EmpenhoInDB(EmpenhoBase):
     id: int
+    status: Optional[str] = None
     secao_requisitante: SeçãoInDB
     nota_credito: NotaCreditoInDB 
     class Config:
@@ -281,7 +285,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.3.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -634,18 +638,28 @@ def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_
     db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).with_for_update().first()
     if not db_empenho:
         raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
-    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
-    saldo_empenho = db_empenho.valor - soma_anulacoes
-    if anulacao_in.valor > saldo_empenho:
-        raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
+    
+    # O saldo do empenho é o seu valor atual
+    if anulacao_in.valor > db_empenho.valor:
+        raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {db_empenho.valor:,.2f}).")
+    
     db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
     if db_nc:
         db_nc.saldo_disponivel += anulacao_in.valor
         if db_nc.status == "Totalmente Empenhada":
             db_nc.status = "Ativa"
+
+    # Debita o valor do empenho e atualiza o status
+    db_empenho.valor -= anulacao_in.valor
+    if db_empenho.valor < 0.01:
+        db_empenho.valor = 0
+        db_empenho.status = "Anulação Total Realizada"
+    else:
+        db_empenho.status = "Anulação Parcial Realizada"
+
     db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
     db.add(db_anulacao)
-    log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'.")
+    log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'. Saldo do empenho agora é R$ {db_empenho.valor:,.2f}.")
     db.commit()
     db.refresh(db_anulacao)
     return db_anulacao
@@ -680,15 +694,20 @@ def read_recolhimentos(nota_credito_id: int, db: Session = Depends(get_db), curr
 
 @app.get("/dashboard/kpis", summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
 def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
+    saldo_total_nc = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
     ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
-    soma_empenhos = db.query(func.sum(Empenho.valor)).scalar() or 0.0
-    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).scalar() or 0.0
-    valor_empenhado_liquido = (soma_empenhos or 0.0) - (soma_anulacoes or 0.0)
+    
+    # O valor empenhado total é a soma dos saldos atuais de todos os empenhos
+    valor_empenhado_liquido = db.query(func.sum(Empenho.valor)).scalar() or 0.0
+    
+    # Novo KPI para empenhos FAKE
+    valor_total_empenhos_fake = db.query(func.sum(Empenho.valor)).filter(Empenho.is_fake == True).scalar() or 0.0
+
     return {
-        "saldo_disponivel_total": saldo_total,
+        "saldo_disponivel_total": saldo_total_nc,
         "valor_empenhado_total": valor_empenhado_liquido,
-        "ncs_ativas": ncs_ativas
+        "ncs_ativas": ncs_ativas,
+        "valor_total_empenhos_fake": valor_total_empenhos_fake
     }
 
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
@@ -756,8 +775,8 @@ def export_empenhos_excel(
     data_to_export = [{
         "Nº do Empenho": e.numero_ne, "NC Associada": e.nota_credito.numero_nc,
         "Seção Requisitante": e.secao_requisitante.nome, "Valor (R$)": e.valor,
-        "Data do Empenho": e.data_empenho.strftime('%d/%m/%Y'),
-        "Observação": e.observacao
+        "Data do Empenho": e.data_empenho.strftime('%d/%m/%Y'), "É Fake?": "Sim" if e.is_fake else "Não",
+        "Status": e.status or "OK", "Observação": e.observacao
     } for e in empenhos]
     
     df = pd.DataFrame(data_to_export)
@@ -813,7 +832,7 @@ def export_geral_excel(
                     "Valor (R$)": e.valor,
                     "Saldo Disponível (R$)": "",
                     "Data": e.data_empenho.strftime('%d/%m/%Y'),
-                    "Status / Obs": e.observacao or '',
+                    "Status / Obs": e.status or ('FAKE' if e.is_fake else ''),
                 })
             for r in nc.recolhimentos:
                  data_to_export.append({
@@ -894,11 +913,12 @@ def get_relatorio_pdf(
         if incluir_detalhes:
             if nc.empenhos:
                 elements.append(Spacer(1, 0.1*inch))
-                empenhos_data = [["<b>Empenhos da NC</b>", "", "", ""], ["Nº da NE", "Valor", "Data", "Observação"]]
+                empenhos_data = [["<b>Empenhos da NC</b>", "", "", "", ""], ["Nº da NE", "Valor (Saldo)", "Data", "Status", "Observação"]]
                 for e in nc.empenhos:
-                    empenhos_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), e.observacao or ''])
+                    status_empenho = e.status or ('FAKE' if e.is_fake else 'OK')
+                    empenhos_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), status_empenho, e.observacao or ''])
                 
-                empenhos_tbl = Table(empenhos_data, colWidths=[2.7*inch, 2.7*inch, 2.7*inch, 2.7*inch])
+                empenhos_tbl = Table(empenhos_data, colWidths=[2.16*inch, 2.16*inch, 2.16*inch, 2.16*inch, 2.16*inch])
                 empenhos_tbl.setStyle(TableStyle([
                     ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
                     ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
