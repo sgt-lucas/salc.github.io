@@ -502,6 +502,16 @@ def read_notas_credito(
     results = query.order_by(desc(NotaCredito.data_chegada)).offset((page - 1) * size).limit(size).all()
     return {"total": total, "page": page, "size": size, "results": results}
 
+@app.get("/notas-credito/distinct/plano-interno", response_model=List[str], summary="Obtém Planos Internos únicos", tags=["Notas de Crédito"])
+def get_distinct_plano_interno(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    results = db.query(NotaCredito.plano_interno).distinct().order_by(NotaCredito.plano_interno).all()
+    return [result[0] for result in results if result[0]]
+
+@app.get("/notas-credito/distinct/nd", response_model=List[str], summary="Obtém Naturezas de Despesa únicas", tags=["Notas de Crédito"])
+def get_distinct_nd(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    results = db.query(NotaCredito.nd).distinct().order_by(NotaCredito.nd).all()
+    return [result[0] for result in results if result[0]]
+
 @app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém detalhes de uma Nota de Crédito", tags=["Notas de Crédito"])
 def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db_nc = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel)).filter(NotaCredito.id == nc_id).first()
@@ -760,6 +770,72 @@ def export_empenhos_excel(
 
     headers = {'Content-Disposition': 'attachment; filename="relatorio_empenhos.xlsx"'}
     return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
+@app.get("/relatorios/excel/geral", summary="Exporta um relatório consolidado para Excel", tags=["Relatórios"])
+def export_geral_excel(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+    plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None),
+    incluir_detalhes: bool = Query(False)
+):
+    query = db.query(NotaCredito).options(
+        joinedload(NotaCredito.secao_responsavel),
+        joinedload(NotaCredito.empenhos).joinedload(Empenho.secao_requisitante),
+        joinedload(NotaCredito.recolhimentos)
+    ).order_by(NotaCredito.plano_interno)
+    
+    if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
+    if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
+    if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
+    if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
+    ncs = query.all()
+
+    data_to_export = []
+    for nc in ncs:
+        data_to_export.append({
+            "Tipo de Registro": "Nota de Crédito",
+            "Nº NC / NE": nc.numero_nc,
+            "Plano Interno": nc.plano_interno,
+            "ND": nc.nd,
+            "Seção": nc.secao_responsavel.nome,
+            "Valor (R$)": nc.valor,
+            "Saldo Disponível (R$)": nc.saldo_disponivel,
+            "Data": nc.prazo_empenho.strftime('%d/%m/%Y'),
+            "Status / Obs": nc.status,
+        })
+        if incluir_detalhes:
+            for e in nc.empenhos:
+                data_to_export.append({
+                    "Tipo de Registro": ">> Empenho",
+                    "Nº NC / NE": e.numero_ne,
+                    "Plano Interno": "", "ND": "",
+                    "Seção": e.secao_requisitante.nome,
+                    "Valor (R$)": e.valor,
+                    "Saldo Disponível (R$)": "",
+                    "Data": e.data_empenho.strftime('%d/%m/%Y'),
+                    "Status / Obs": e.observacao or '',
+                })
+            for r in nc.recolhimentos:
+                 data_to_export.append({
+                    "Tipo de Registro": ">> Recolhimento",
+                    "Nº NC / NE": "", "Plano Interno": "", "ND": "", "Seção": "",
+                    "Valor (R$)": r.valor,
+                    "Saldo Disponível (R$)": "",
+                    "Data": r.data.strftime('%d/%m/%Y'),
+                    "Status / Obs": r.observacao or '',
+                })
+
+    df = pd.DataFrame(data_to_export)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Relatório Geral')
+    
+    log_audit_action(db, current_user.username, "GENERAL_REPORT_EXCEL", f"Exportação de relatório geral com {len(ncs)} NCs.")
+    db.commit()
+
+    headers = {'Content-Disposition': 'attachment; filename="relatorio_geral_salc.xlsx"'}
+    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
 
 @app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF", tags=["Relatórios"])
 def get_relatorio_pdf(
