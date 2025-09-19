@@ -113,14 +113,14 @@ tbody tr.empenho-fake:hover { background-color: #fff3cd; }
     color: white;
 }
 
-.status { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; }
+.status { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 700; color: white; text-transform: uppercase; text-align: center;}
 .status-ativa { background-color: var(--cor-sucesso); }
 .status-totalmente-empenhada { background-color: var(--cor-texto-secundario); }
 .status-expirada { background-color: var(--cor-erro); }
 .status-anulacao-parcial-realizada { background-color: #fd7e14; }
 .status-anulacao-total-realizada { background-color: var(--cor-texto-secundario); }
 .status-fake { background-color: var(--cor-aviso); color: var(--cor-texto-principal); }
-.status-ok { color: var(--cor-texto-secundario); }
+.status-ok { background-color: var(--cor-fundo); color: var(--cor-texto-secundario); }
 
 /* ==========================================================================
    5. Estilos de Modais e Formulários
