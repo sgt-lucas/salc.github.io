@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, Field, validator
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc, Boolean
 from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase, joinedload
 from sqlalchemy.exc import IntegrityError
@@ -72,7 +72,6 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     role = Column(SQLAlchemyEnum(UserRole), nullable=False, default=UserRole.OPERADOR)
 
@@ -158,7 +157,6 @@ class Token(BaseModel):
 
 class UserBase(BaseModel):
     username: str
-    email: EmailStr
 
 class UserCreate(UserBase):
     password: str
@@ -220,7 +218,7 @@ class NotaCreditoInDB(NotaCreditoBase):
 
 class EmpenhoBase(BaseModel):
     numero_ne: str
-    valor: float = Field(..., gt=0)
+    valor: float = Field(..., ge=0) # CORREÇÃO: Alterado de gt=0 para ge=0
     data_empenho: date
     observacao: Optional[str] = None
     nota_credito_id: int
@@ -285,7 +283,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.5.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -297,10 +295,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    print("Iniciando aplicação e criando tabelas da base de dados, se necessário...")
+    print("Iniciando aplicação...")
     Base.metadata.create_all(bind=engine)
     print("Aplicação iniciada com sucesso.")
-
 
 # ==============================================================================
 # 6. UTILITÁRIOS E DEPENDÊNCIAS
@@ -387,12 +384,10 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     if db.query(User).filter(User.username == user.username).first():
         raise HTTPException(status_code=400, detail="Nome de utilizador já existe")
-    if db.query(User).filter(User.email == user.email).first():
-        raise HTTPException(status_code=400, detail="E-mail já registado")
 
     try:
         hashed_password = get_password_hash(user.password)
-        new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
+        new_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
         db.add(new_user)
         log_audit_action(db, admin_user.username, "USER_CREATED", f"Utilizador '{user.username}' criado com perfil '{user.role.value}'.")
         db.commit()
@@ -695,7 +690,6 @@ def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depen
     try:
         saldo_total_nc = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
         ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
-        
         valor_total_empenhos_fake = db.query(func.sum(Empenho.valor)).filter(Empenho.is_fake == True).scalar() or 0.0
 
         return {
@@ -753,6 +747,15 @@ def export_nc_excel(
     } for nc in ncs]
 
     df = pd.DataFrame(data_to_export)
+    
+    if not df.empty:
+        total_row = pd.DataFrame([{
+            "Nº da NC": "TOTAL GERAL",
+            "Valor Original (R$)": df["Valor Original (R$)"].sum(),
+            "Saldo Disponível (R$)": df["Saldo Disponível (R$)"].sum()
+        }])
+        df = pd.concat([df, total_row], ignore_index=True)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Notas de Crédito')
@@ -777,6 +780,11 @@ def export_empenhos_excel(
     } for e in empenhos]
     
     df = pd.DataFrame(data_to_export)
+
+    if not df.empty:
+        total_row = pd.DataFrame([{"Nº do Empenho": "TOTAL GERAL", "Valor (R$)": df["Valor (R$)"].sum()}])
+        df = pd.concat([df, total_row], ignore_index=True)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Empenhos')
@@ -842,6 +850,19 @@ def export_geral_excel(
                 })
 
     df = pd.DataFrame(data_to_export)
+    
+    if not df.empty:
+        nc_df = df[df['Tipo de Registro'] == 'Nota de Crédito']
+        total_valor = nc_df['Valor (R$)'].sum()
+        total_saldo = nc_df['Saldo Disponível (R$)'].sum()
+        
+        total_row = pd.DataFrame([{
+            "Tipo de Registro": "TOTAL GERAL",
+            "Valor (R$)": total_valor,
+            "Saldo Disponível (R$)": total_saldo
+        }])
+        df = pd.concat([df, total_row], ignore_index=True)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Relatório Geral')
@@ -907,37 +928,45 @@ def get_relatorio_pdf(
         ]))
         elements.append(tbl)
         
-        if incluir_detalhes:
+        if incluir_detalhes and (nc.empenhos or nc.recolhimentos):
+            elements.append(Spacer(1, 0.1*inch))
+            details_data = []
             if nc.empenhos:
-                elements.append(Spacer(1, 0.1*inch))
-                empenhos_data = [["<b>Empenhos da NC</b>", "", "", "", ""], ["Nº da NE", "Valor (Saldo)", "Data", "Status", "Observação"]]
+                details_data.append([Paragraph("<b>Empenhos da NC</b>", styles['Normal']), "", "", "", ""])
+                details_data.append(["Nº da NE", "Valor (Saldo)", "Data", "Status", "Observação"])
                 for e in nc.empenhos:
                     status_empenho = e.status or ('FAKE' if e.is_fake else 'OK')
-                    empenhos_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), status_empenho, e.observacao or ''])
-                
-                empenhos_tbl = Table(empenhos_data, colWidths=[2.16*inch, 2.16*inch, 2.16*inch, 2.16*inch, 2.16*inch])
-                empenhos_tbl.setStyle(TableStyle([
-                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
-                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
-                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
-                ]))
-                elements.append(empenhos_tbl)
-
+                    details_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), status_empenho, e.observacao or ''])
+            
             if nc.recolhimentos:
-                elements.append(Spacer(1, 0.1*inch))
-                recolhimentos_data = [["<b>Recolhimentos da NC</b>", "", ""], ["Valor", "Data", "Observação"]]
+                details_data.append([Paragraph("<b>Recolhimentos da NC</b>", styles['Normal']), "", ""])
+                details_data.append(["Valor", "Data", "Observação"])
                 for r in nc.recolhimentos:
-                    recolhimentos_data.append([f"R$ {r.valor:,.2f}", r.data.strftime('%d/%m/%Y'), r.observacao or ''])
+                    details_data.append([f"R$ {r.valor:,.2f}", r.data.strftime('%d/%m/%Y'), r.observacao or ''])
 
-                recolhimentos_tbl = Table(recolhimentos_data, colWidths=[3.6*inch, 3.6*inch, 3.6*inch])
-                recolhimentos_tbl.setStyle(TableStyle([
-                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
-                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
-                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
-                ]))
-                elements.append(recolhimentos_tbl)
-        
+            details_tbl = Table(details_data)
+            elements.append(details_tbl)
+
         elements.append(Spacer(1, 0.2*inch))
+
+    if ncs:
+        total_valor_geral = sum(nc.valor for nc in ncs)
+        total_saldo_disponivel = sum(nc.saldo_disponivel for nc in ncs)
+
+        elements.append(Spacer(1, 0.4*inch))
+        
+        total_data = [[
+            Paragraph(f"<b>TOTAL GERAL (VALOR ORIGINAL):</b> R$ {total_valor_geral:,.2f}", styles['Normal']),
+            Paragraph(f"<b>TOTAL GERAL (SALDO DISPONÍVEL):</b> R$ {total_saldo_disponivel:,.2f}", styles['Normal']),
+        ]]
+        
+        total_tbl = Table(total_data, colWidths=[5.4*inch, 5.4*inch])
+        total_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.lightgrey),
+            ('GRID', (0,0), (-1,-1), 1, colors.black),
+            ('BOX', (0,0), (-1,-1), 2, colors.black),
+        ]))
+        elements.append(total_tbl)
 
     if not ncs:
         elements.append(Paragraph("Nenhuma Nota de Crédito encontrada para os filtros selecionados.", styles['Normal']))
