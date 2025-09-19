@@ -365,16 +365,15 @@
                                 <div class="card"><h3>Gerir Utilizadores</h3><p>Adicione novos utilizadores e defina os seus perfis de acesso.</p>
                                 <form id="user-form" class="admin-form-grid">
                                     <input type="text" name="username" placeholder="Nome de utilizador" required>
-                                    <input type="email" name="email" placeholder="E-mail" required>
                                     <input type="password" name="password" placeholder="Senha" required>
                                     <select name="role" required><option value="OPERADOR">Operador</option><option value="ADMINISTRADOR">Administrador</option></select>
                                     <button type="submit" class="btn btn-primary">Adicionar Utilizador</button>
                                 </form>
                                 <div id="form-feedback" class="modal-feedback" style="display: none; margin-top: 1rem;"></div>
-                                <div class="table-container" style="margin-top: 1.5rem;"><table id="users-table"><thead><tr><th>ID</th><th>Utilizador</th><th>E-mail</th><th>Perfil</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div></div>`;
+                                <div class="table-container" style="margin-top: 1.5rem;"><table id="users-table"><thead><tr><th>ID</th><th>Utilizador</th><th>Perfil</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div></div>`;
                             const users = await apiService.get('/users');
                             const userTableBody = container.querySelector('#users-table tbody');
-                            userTableBody.innerHTML = users.map(u => `<tr><td>${u.id}</td><td>${u.username}</td><td>${u.email}</td><td>${u.role}</td><td class="actions">${u.id === currentUser.id ? '<span>(Você)</span>' : `<button class="btn-icon btn-delete" data-action="delete-user" data-id="${u.id}" data-username="${u.username}" title="Excluir"><i class="fas fa-trash"></i></button>`}</td></tr>`).join('');
+                            userTableBody.innerHTML = users.map(u => `<tr><td>${u.id}</td><td>${u.username}</td><td>${u.role}</td><td class="actions">${u.id === currentUser.id ? '<span>(Você)</span>' : `<button class="btn-icon btn-delete" data-action="delete-user" data-id="${u.id}" data-username="${u.username}" title="Excluir"><i class="fas fa-trash"></i></button>`}</td></tr>`).join('');
                             container.querySelector('#user-form').addEventListener('submit', eventHandlers.admin.handleUserFormSubmit);
                             break;
                         case 'secoes':
@@ -421,6 +420,7 @@
                     case 'delete-nc': this.notasCredito.delete(id, numero); break;
                     case 'delete-empenho': this.empenhos.delete(id, numero); break;
                     case 'add-anulacao': this.empenhos.openAnulacaoModal(id, numero); break;
+                    case 'add-recolhimento': this.recolhimentos.openAddModal(id); break;
                     case 'edit-secao': this.admin.editSecao(id, nome); break;
                     case 'delete-secao': this.admin.deleteSecao(id, nome); break;
                     case 'delete-user': this.admin.deleteUser(id, username); break;
@@ -552,7 +552,7 @@
                     data.valor = parseFloat(data.valor);
                     data.nota_credito_id = parseInt(data.nota_credito_id);
                     data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
-                    data.is_fake = formData.has('is_fake'); // Corrigido para verificar se a checkbox existe
+                    data.is_fake = formData.has('is_fake');
                     
                     try {
                         await apiService[method](endpoint, data);
@@ -564,7 +564,6 @@
                         btn.disabled = false; btn.innerHTML = id ? 'Salvar Alterações' : 'Criar Empenho';
                     }
                 },
-
 
                 delete(id, numero) {
                     uiComponents.showConfirmationModal('Excluir Empenho', `Tem a certeza de que deseja excluir o empenho "${numero}"?`, async () => {
@@ -598,6 +597,50 @@
                         });
                     });
                 },
+            },
+
+            recolhimentos: {
+                openAddModal(notaCreditoId) {
+                    const formHTML = this.getRecolhimentoFormHTML();
+                    uiComponents.openModal('Adicionar Novo Recolhimento', formHTML, (modal, close) => {
+                        modal.querySelector('#recolhimento-form').addEventListener('submit', (e) => this.handleFormSubmit(e, notaCreditoId, close));
+                    });
+                },
+
+                getRecolhimentoFormHTML() {
+                    return `<form id="recolhimento-form" novalidate>
+                        <div class="form-grid">
+                            <div class="form-field"><label for="valor">Valor a Recolher (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div>
+                            <div class="form-field"><label for="data">Data do Recolhimento</label><input type="date" name="data" required></div>
+                            <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div>
+                        </div>
+                        <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
+                        <div class="form-actions"><button type="submit" class="btn btn-primary">Registar Recolhimento</button></div>
+                    </form>`;
+                },
+                
+                async handleFormSubmit(e, notaCreditoId, closeModalFunc) {
+                    e.preventDefault();
+                    const form = e.target, btn = form.querySelector('button[type="submit"]'), feedback = form.querySelector('#form-feedback');
+                    if (!form.checkValidity()) { feedback.textContent = 'Por favor, preencha todos os campos obrigatórios.'; feedback.style.display = 'block'; return; }
+                    
+                    btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A salvar...`; feedback.style.display = 'none';
+                    
+                    const data = Object.fromEntries(new FormData(form));
+                    data.valor = parseFloat(data.valor);
+                    data.nota_credito_id = parseInt(notaCreditoId);
+                    
+                    try {
+                        await apiService.post('/recolhimentos-saldo', data);
+                        closeModalFunc();
+                        // Recarrega o modal de extrato para mostrar o novo recolhimento
+                        eventHandlers.notasCredito.showExtratoModal(notaCreditoId);
+                    } catch (error) {
+                        feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
+                    } finally {
+                        btn.disabled = false; btn.innerHTML = 'Registar Recolhimento';
+                    }
+                }
             },
             
             getEmpenhoFormHTML(empenho = {}, notasCredito, secoes) {
