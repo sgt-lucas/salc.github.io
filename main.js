@@ -633,7 +633,6 @@
                     try {
                         await apiService.post('/recolhimentos-saldo', data);
                         closeModalFunc();
-                        // Recarrega o modal de extrato para mostrar o novo recolhimento
                         eventHandlers.notasCredito.showExtratoModal(notaCreditoId);
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
@@ -664,7 +663,7 @@
             admin: {
                  async handleUserFormSubmit(e) {
                     e.preventDefault();
-                    const form = e.target, btn = form.querySelector('button[type="submit"]'), feedback = document.querySelector('#form-feedback');
+                    const form = e.target, btn = form.querySelector('button[type="submit"]'), feedback = form.querySelector('#form-feedback');
                     btn.disabled = true; feedback.style.display = 'none';
                     const data = Object.fromEntries(new FormData(form));
                     try {
