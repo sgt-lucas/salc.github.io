@@ -509,12 +509,13 @@ def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db),
 @app.get("/notas-credito", response_model=PaginatedNCS, summary="Lista e filtra as Notas de Crédito", tags=["Notas de Crédito"])
 def read_notas_credito(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=1000), plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
+    size: int = Query(10, ge=1, le=1000), search: Optional[str] = Query(None), plano_interno: Optional[str] = Query(None), 
+    nd: Optional[str] = Query(None), secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
 ):
     query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel))
-    if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
-    if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
+    if search: query = query.filter(NotaCredito.numero_nc.ilike(f"%{search}%"))
+    if plano_interno: query = query.filter(NotaCredito.plano_interno == plano_interno)
+    if nd: query = query.filter(NotaCredito.nd == nd)
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status: query = query.filter(NotaCredito.status == status)
     total = query.count()
@@ -615,12 +616,13 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
 @app.get("/empenhos", response_model=PaginatedEmpenhos, summary="Lista e filtra Empenhos", tags=["Empenhos"])
 def read_empenhos(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=1000), nota_credito_id: Optional[int] = Query(None)
+    size: int = Query(10, ge=1, le=1000), search: Optional[str] = Query(None), nota_credito_id: Optional[int] = Query(None)
 ):
     query = db.query(Empenho).options(
         joinedload(Empenho.secao_requisitante),
         joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel)
     )
+    if search: query = query.filter(Empenho.numero_ne.ilike(f"%{search}%"))
     if nota_credito_id:
         query = query.filter(Empenho.nota_credito_id == nota_credito_id)
     total = query.count()
