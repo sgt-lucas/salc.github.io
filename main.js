@@ -493,7 +493,8 @@
                         const allAnulacoes = allAnulacoesArrays.flat();
 
                         const empenhosMap = new Map(empenhosData.results.map(e => [e.id, e.numero_ne]));
-
+                        
+                        const descricaoNC = nc.descricao ? `<p><strong>Descrição:</strong> ${nc.descricao}</p>` : '';
                         const empenhosHTML = empenhosData.results.length > 0 ? empenhosData.results.map(e => `<tr><td>${e.numero_ne}</td><td>${e.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(e.data_empenho + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${e.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="4">Nenhum empenho associado.</td></tr>';
                         const recolhimentosHTML = recolhimentos.length > 0 ? recolhimentos.map(r => `<tr><td>${r.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(r.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${r.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="3">Nenhum recolhimento registado.</td></tr>';
                         const anulacoesHTML = allAnulacoes.length > 0 ? allAnulacoes.map(a => `<tr><td>${empenhosMap.get(a.empenho_id) || 'N/A'}</td><td>${a.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td><td>${new Date(a.data + 'T00:00:00').toLocaleDateString('pt-BR')}</td><td>${a.observacao || ''}</td></tr>`).join('') : '<tr><td colspan="4">Nenhuma anulação registada.</td></tr>';
@@ -503,7 +504,8 @@
                                 <h4>Detalhes da NC ${nc.numero_nc}</h4>
                                 <p><strong>Plano Interno:</strong> ${nc.plano_interno} | <strong>ND:</strong> ${nc.nd} | <strong>Seção:</strong> ${nc.secao_responsavel.nome}</p>
                                 <p><strong>Valor Original:</strong> ${nc.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} | <strong>Saldo Disponível:</strong> ${nc.saldo_disponivel.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
-                                <hr style="margin: 1rem 0;"><h4>Empenhos Associados</h4><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${empenhosHTML}</tbody></table></div>
+                                ${descricaoNC}
+                                <hr style="margin: 1rem 0;"><h4>Empenhos Associados</h4><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor (Saldo)</th><th>Data</th><th>Observação</th></tr></thead><tbody>${empenhosHTML}</tbody></table></div>
                                 <hr style="margin: 1rem 0;"><div style="display: flex; justify-content: space-between; align-items: center;"><h4>Recolhimentos de Saldo</h4><button class="btn" data-action="add-recolhimento" data-id="${id}"><i class="fas fa-plus"></i> Adicionar</button></div><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${recolhimentosHTML}</tbody></table></div>
                                 <hr style="margin: 1rem 0;"><h4>Anulações de Empenho (Histórico)</h4><div class="table-container" style="max-height: 150px; overflow-y: auto;"><table><thead><tr><th>Nº do Empenho</th><th>Valor</th><th>Data</th><th>Observação</th></tr></thead><tbody>${anulacoesHTML}</tbody></table></div>
                             </div>`;
@@ -664,7 +666,7 @@
                  async handleUserFormSubmit(e) {
                     e.preventDefault();
                     const form = e.target, btn = form.querySelector('button[type="submit"]'), feedback = form.querySelector('#form-feedback');
-                    btn.disabled = true; feedback.style.display = 'none';
+                    btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> A salvar...`; feedback.style.display = 'none';
                     const data = Object.fromEntries(new FormData(form));
                     try {
                         await apiService.post('/users', data);
@@ -675,6 +677,7 @@
                         feedback.style.display = 'block';
                     } finally {
                         btn.disabled = false;
+                        btn.innerHTML = 'Adicionar Utilizador';
                     }
                 },
                 
