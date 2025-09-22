@@ -218,7 +218,7 @@ class NotaCreditoInDB(NotaCreditoBase):
 
 class EmpenhoBase(BaseModel):
     numero_ne: str
-    valor: float = Field(..., ge=0) # CORREÇÃO: Alterado de gt=0 para ge=0
+    valor: float = Field(..., ge=0)
     data_empenho: date
     observacao: Optional[str] = None
     nota_credito_id: int
@@ -283,7 +283,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.6.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.7.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -293,10 +293,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
 @app.on_event("startup")
 def on_startup():
     print("Iniciando aplicação...")
     Base.metadata.create_all(bind=engine)
+    print("Tabelas criadas (se não existiam).")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).first()
+        if user is None:
+            print("Nenhum usuário encontrado. Criando usuário 'admin' padrão...")
+            default_admin = User(
+                username="admin",
+                hashed_password=get_password_hash("admin1234"),
+                role=UserRole.ADMINISTRADOR
+            )
+            db.add(default_admin)
+            db.commit()
+            print("Usuário 'admin' criado com sucesso. Use a senha 'admin1234' para o primeiro login.")
+        else:
+            print("Usuário(s) já existente(s). Nenhum usuário padrão foi criado.")
+    finally:
+        db.close()
+    
     print("Aplicação iniciada com sucesso.")
 
 # ==============================================================================
@@ -316,9 +339,6 @@ def log_audit_action(db: Session, username: str, action: str, details: str = Non
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
