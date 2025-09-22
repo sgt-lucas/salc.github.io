@@ -18,6 +18,7 @@
             users: [],
             auditLogs: [],
             currentFilters: { nc: {}, empenho: {} },
+            searchTerms: { nc: '', empenho: '' },
         };
 
         const DOM = {
@@ -100,6 +101,25 @@
                 });
             },
             
+            showToast(message, type = 'success') {
+                let container = document.querySelector('.toast-container');
+                if (!container) {
+                    container = document.createElement('div');
+                    container.className = 'toast-container';
+                    document.body.appendChild(container);
+                }
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+                toast.innerHTML = `<i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-times-circle'}"></i> ${message}`;
+                container.appendChild(toast);
+                setTimeout(() => {
+                    toast.remove();
+                    if (!container.hasChildNodes()) {
+                        container.remove();
+                    }
+                }, 4000);
+            },
+
             renderPagination(container, { total, page, size }, onPageChange) {
                 if (total <= size) { container.innerHTML = ''; return; }
                 const totalPages = Math.ceil(total / size);
@@ -212,17 +232,21 @@
                 container.innerHTML = `
                     <div class="view-header">
                         <h1>Gestão de Notas de Crédito</h1>
-                        <div>
-                            <button id="export-nc-btn" class="btn"><i class="fas fa-file-excel"></i> Exportar para Excel</button>
-                            <button id="add-nc-btn" class="btn btn-primary" style="margin-left: 1rem;"><i class="fas fa-plus"></i> Adicionar Nova NC</button>
-                        </div>
+                        <button id="add-nc-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Adicionar Nova NC</button>
                     </div>
-                    <div class="filters card">
-                        <div class="filter-group"><label for="filter-pi">Plano Interno</label><select id="filter-pi"><option value="">Todos</option></select></div>
-                        <div class="filter-group"><label for="filter-nd">Natureza de Despesa</label><select id="filter-nd"><option value="">Todas</option></select></div>
-                        <div class="filter-group"><label for="filter-secao">Seção Responsável</label><select id="filter-secao"><option value="">Todas</option></select></div>
-                        <div class="filter-group"><label for="filter-status">Status</label><select id="filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
-                        <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
+                    <div class="card">
+                        <div class="filters">
+                            <div class="search-bar">
+                                <i class="fas fa-search"></i>
+                                <input type="search" id="search-nc" placeholder="Buscar por Nº da NC...">
+                            </div>
+                            <div class="filter-group"><label for="filter-pi">Plano Interno</label><select id="filter-pi"><option value="">Todos</option></select></div>
+                            <div class="filter-group"><label for="filter-nd">Natureza de Despesa</label><select id="filter-nd"><option value="">Todas</option></select></div>
+                            <div class="filter-group"><label for="filter-secao">Seção Responsável</label><select id="filter-secao"><option value="">Todas</option></select></div>
+                            <div class="filter-group"><label for="filter-status">Status</label><select id="filter-status"><option value="">Todos</option><option value="Ativa">Ativa</option><option value="Totalmente Empenhada">Totalmente Empenhada</option></select></div>
+                            <button id="apply-filters-btn" class="btn">Aplicar Filtros</button>
+                            <button id="export-nc-btn" class="btn"><i class="fas fa-file-excel"></i> Exportar</button>
+                        </div>
                     </div>
                     <div class="table-container card"><table id="nc-table"><thead><tr><th>Nº da NC</th><th>Plano Interno</th><th>ND</th><th>Seção</th><th>Valor Original</th><th>Saldo Disponível</th><th>Prazo</th><th>Status</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
                     <div id="nc-pagination-container"></div>`;
@@ -253,6 +277,10 @@
                 });
                 container.querySelector('#add-nc-btn').addEventListener('click', eventHandlers.notasCredito.openAddModal);
                 container.querySelector('#export-nc-btn').addEventListener('click', () => eventHandlers.reports.exportToExcel('notas-credito'));
+                container.querySelector('#search-nc').addEventListener('input', (e) => {
+                    appState.searchTerms.nc = e.target.value;
+                    this.loadNotasCreditoTable(1);
+                });
             },
 
             async loadNotasCreditoTable(page = 1) {
@@ -261,7 +289,7 @@
                 tableBody.innerHTML = `<tr><td colspan="9" style="text-align:center;">A buscar dados...</td></tr>`;
                 try {
                     const cleanFilters = Object.fromEntries(Object.entries(appState.currentFilters.nc).filter(([_, v]) => v != ''));
-                    const params = new URLSearchParams({ page, size: appState.notasCredito.size, ...cleanFilters });
+                    const params = new URLSearchParams({ page, size: appState.notasCredito.size, search: appState.searchTerms.nc, ...cleanFilters });
                     const data = await apiService.get(`/notas-credito?${params.toString()}`);
                     appState.notasCredito = data;
                     if (data.results.length === 0) {
@@ -291,9 +319,15 @@
                 container.innerHTML = `
                     <div class="view-header">
                         <h1>Gestão de Empenhos</h1>
-                        <div>
-                            <button id="export-empenho-btn" class="btn"><i class="fas fa-file-excel"></i> Exportar para Excel</button>
-                            <button id="add-empenho-btn" class="btn btn-primary" style="margin-left: 1rem;"><i class="fas fa-plus"></i> Novo Empenho</button>
+                        <button id="add-empenho-btn" class="btn btn-primary"><i class="fas fa-plus"></i> Novo Empenho</button>
+                    </div>
+                    <div class="card">
+                        <div class="filters">
+                            <div class="search-bar">
+                                <i class="fas fa-search"></i>
+                                <input type="search" id="search-empenho" placeholder="Buscar por Nº da NE...">
+                            </div>
+                            <button id="export-empenho-btn" class="btn" style="margin-left: auto;"><i class="fas fa-file-excel"></i> Exportar</button>
                         </div>
                     </div>
                     <div class="table-container card"><table id="empenhos-table"><thead><tr><th>Nº do Empenho</th><th>Nº da NC Associada</th><th>Seção Requisitante</th><th>Valor do Saldo</th><th>Status</th><th>Data</th><th class="actions">Ações</th></tr></thead><tbody></tbody></table></div>
@@ -302,6 +336,10 @@
                 await this.loadEmpenhosTable(page);
                 container.querySelector('#add-empenho-btn').addEventListener('click', eventHandlers.empenhos.openAddModal);
                 container.querySelector('#export-empenho-btn').addEventListener('click', () => eventHandlers.reports.exportToExcel('empenhos'));
+                container.querySelector('#search-empenho').addEventListener('input', (e) => {
+                    appState.searchTerms.empenho = e.target.value;
+                    this.loadEmpenhosTable(1);
+                });
             },
 
             async loadEmpenhosTable(page = 1) {
@@ -309,7 +347,7 @@
                 if (!tableBody) return;
                 tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">A buscar dados...</td></tr>`;
                 try {
-                    const params = new URLSearchParams({ page, size: appState.empenhos.size });
+                    const params = new URLSearchParams({ page, size: appState.empenhos.size, search: appState.searchTerms.empenho });
                     const data = await apiService.get(`/empenhos?${params.toString()}`);
                     appState.empenhos = data;
                     if (data.results.length === 0) {
@@ -463,6 +501,7 @@
                         await apiService[method](endpoint, data);
                         closeModalFunc();
                         await viewRenderer.loadNotasCreditoTable(appState.notasCredito.page);
+                        uiComponents.showToast(id ? 'Nota de Crédito atualizada com sucesso!' : 'Nota de Crédito criada com sucesso!');
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
                     } finally {
@@ -475,8 +514,9 @@
                         try {
                             await apiService.delete(`/notas-credito/${id}`);
                             await viewRenderer.loadNotasCreditoTable(appState.notasCredito.page);
+                            uiComponents.showToast(`NC "${numero}" excluída com sucesso!`);
                         } catch (error) {
-                            uiComponents.openModal('Erro ao Excluir', `<p>${error.message}</p>`);
+                            uiComponents.showToast(`Erro ao excluir NC: ${error.message}`, 'error');
                         }
                     });
                 },
@@ -554,12 +594,13 @@
                     data.valor = parseFloat(data.valor);
                     data.nota_credito_id = parseInt(data.nota_credito_id);
                     data.secao_requisitante_id = parseInt(data.secao_requisitante_id);
-                    data.is_fake = formData.has('is_fake');
+                    data.is_fake = form.querySelector('[name="is_fake"]').checked;
                     
                     try {
                         await apiService[method](endpoint, data);
                         closeModalFunc();
                         await viewRenderer.loadEmpenhosTable(appState.empenhos.page);
+                        uiComponents.showToast(id ? 'Empenho atualizado com sucesso!' : 'Empenho criado com sucesso!');
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
                     } finally {
@@ -572,14 +613,15 @@
                         try {
                             await apiService.delete(`/empenhos/${id}`);
                             await viewRenderer.loadEmpenhosTable(appState.empenhos.page);
+                            uiComponents.showToast(`Empenho "${numero}" excluído com sucesso!`);
                         } catch (error) {
-                            uiComponents.openModal('Erro ao Excluir', `<p>${error.message}</p>`);
+                            uiComponents.showToast(`Erro ao excluir empenho: ${error.message}`, 'error');
                         }
                     });
                 },
                 
                 openAnulacaoModal(empenhoId, numeroNe) {
-                    const formHTML = `<form id="anulacao-form"><div class="form-grid"><div class="form-field"><label for="valor">Valor a Anular (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div><div class="form-field"><label for="data">Data</label><input type="date" name="data" required></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">Registar Anulação</button></div></form>`;
+                    const formHTML = `<form id="anulacao-form"><div class="form-grid"><div class="form-field"><label for="valor">Valor a Anular (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div><div class="form-field"><label for="data">Data</label><input type="date" name="data" required value="${new Date().toISOString().substring(0, 10)}"></div><div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div></div><div id="form-feedback" class="modal-feedback" style="display: none;"></div><div class="form-actions"><button type="submit" class="btn btn-primary">Registar Anulação</button></div></form>`;
                     uiComponents.openModal(`Anular Empenho ${numeroNe}`, formHTML, (modal, close) => {
                         modal.querySelector('#anulacao-form').addEventListener('submit', async (ev) => {
                             ev.preventDefault();
@@ -592,6 +634,7 @@
                                 await apiService.post('/anulacoes-empenho', data);
                                 close();
                                 await viewRenderer.loadEmpenhosTable(appState.empenhos.page);
+                                uiComponents.showToast('Anulação registada com sucesso!');
                             } catch(error) {
                                 feedback.textContent = error.message; feedback.style.display = 'block';
                                 btn.disabled = false;
@@ -613,7 +656,7 @@
                     return `<form id="recolhimento-form" novalidate>
                         <div class="form-grid">
                             <div class="form-field"><label for="valor">Valor a Recolher (R$)</label><input type="number" name="valor" step="0.01" min="0.01" required></div>
-                            <div class="form-field"><label for="data">Data do Recolhimento</label><input type="date" name="data" required></div>
+                            <div class="form-field"><label for="data">Data do Recolhimento</label><input type="date" name="data" required value="${new Date().toISOString().substring(0, 10)}"></div>
                             <div class="form-field form-field-full"><label for="observacao">Observação</label><textarea name="observacao"></textarea></div>
                         </div>
                         <div id="form-feedback" class="modal-feedback" style="display: none;"></div>
@@ -636,6 +679,7 @@
                         await apiService.post('/recolhimentos-saldo', data);
                         closeModalFunc();
                         eventHandlers.notasCredito.showExtratoModal(notaCreditoId);
+                        uiComponents.showToast('Recolhimento registado com sucesso!');
                     } catch (error) {
                         feedback.textContent = `Erro ao salvar: ${error.message}`; feedback.style.display = 'block';
                     } finally {
@@ -651,7 +695,7 @@
                 return `<form id="empenho-form" data-id="${isEditing ? empenho.id : ''}" novalidate><div class="form-grid">
                             <div class="form-field"><label for="numero_ne">Número do Empenho (NE)</label><input type="text" name="numero_ne" value="${empenho.numero_ne || ''}" required></div>
                             <div class="form-field"><label for="valor">Valor (R$)</label><input type="number" name="valor" step="0.01" min="0.01" value="${empenho.valor || ''}" required></div>
-                            <div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || ''}" required></div>
+                            <div class="form-field"><label for="data_empenho">Data do Empenho</label><input type="date" name="data_empenho" value="${empenho.data_empenho || new Date().toISOString().substring(0, 10)}" required></div>
                             <div class="form-field"><label for="nota_credito_id">Nota de Crédito Associada</label><select name="nota_credito_id" required>${notasOptions}</select></div>
                             <div class="form-field"><label for="secao_requisitante_id">Seção Requisitante</label><select name="secao_requisitante_id" required>${secoesOptions}</select></div>
                             <div class="form-field" style="align-self: center;"><input type="checkbox" id="is_fake" name="is_fake" ${empenho.is_fake ? 'checked' : ''}><label for="is_fake" style="display: inline-block; margin-left: 0.5rem;">Este empenho é FAKE</label></div>
@@ -672,6 +716,7 @@
                         await apiService.post('/users', data);
                         form.reset();
                         await viewRenderer.adminSubView(document.getElementById('admin-content-container'), 'users');
+                        uiComponents.showToast('Utilizador criado com sucesso!');
                     } catch (error) {
                         feedback.textContent = `Erro ao criar utilizador: ${error.message}`;
                         feedback.style.display = 'block';
@@ -683,15 +728,16 @@
                 
                 async handleSecaoFormSubmit(e) {
                     e.preventDefault();
-                    const form = e.target, id = form.id.value, nome = form.nome.value, btn = form.querySelector('button[type="submit"]');
+                    const form = e.target, id = form.querySelector('[name="id"]').value, nome = form.querySelector('[name="nome"]').value, btn = form.querySelector('button[type="submit"]');
                     const method = id ? 'put' : 'post', endpoint = id ? `/secoes/${id}` : '/secoes';
                     btn.disabled = true;
                     try {
                         await apiService[method](endpoint, { nome });
-                        form.reset(); form.id.value = ''; btn.textContent = 'Adicionar Seção';
+                        form.reset(); form.querySelector('[name="id"]').value = ''; btn.textContent = 'Adicionar Seção';
                         await viewRenderer.adminSubView(document.getElementById('admin-content-container'), 'secoes');
+                        uiComponents.showToast(id ? 'Seção atualizada com sucesso!' : 'Seção criada com sucesso!');
                     } catch (error) {
-                        uiComponents.openModal('Erro ao Salvar', `<p>${error.message}</p>`);
+                        uiComponents.showToast(`Erro ao salvar seção: ${error.message}`, 'error');
                     } finally {
                         btn.disabled = false;
                     }
@@ -700,8 +746,8 @@
                 editSecao(id, nome) {
                      const form = document.getElementById('secao-form');
                     if(form) {
-                        form.id.value = id;
-                        form.nome.value = nome;
+                        form.querySelector('[name="id"]').value = id;
+                        form.querySelector('[name="nome"]').value = nome;
                         form.querySelector('button[type="submit"]').textContent = 'Salvar Alterações';
                     }
                 },
@@ -711,8 +757,9 @@
                         try {
                             await apiService.delete(`/secoes/${id}`);
                             await viewRenderer.adminSubView(document.getElementById('admin-content-container'), 'secoes');
+                            uiComponents.showToast(`Seção "${nome}" excluída com sucesso!`);
                         } catch (error) {
-                            uiComponents.openModal('Erro ao Excluir', `<p>${error.message}</p>`);
+                            uiComponents.showToast(`Erro ao excluir seção: ${error.message}`, 'error');
                         }
                     });
                 },
@@ -722,8 +769,9 @@
                         try {
                             await apiService.delete(`/users/${id}`);
                             await viewRenderer.adminSubView(document.getElementById('admin-content-container'), 'users');
+                            uiComponents.showToast(`Utilizador "${username}" excluído com sucesso!`);
                         } catch (error) {
-                            uiComponents.openModal('Erro ao Excluir', `<p>${error.message}</p>`);
+                            uiComponents.showToast(`Erro ao excluir utilizador: ${error.message}`, 'error');
                         }
                     });
                 },
@@ -746,7 +794,7 @@
                         const blob = await apiService.download(`/relatorios/pdf?${params}`);
                         eventHandlers.handleFileDownload(blob, 'relatorio_salc.pdf');
                     } catch (error) {
-                        uiComponents.openModal('Erro ao Gerar Relatório', `<p>${error.message}</p>`);
+                        uiComponents.showToast(`Erro ao gerar PDF: ${error.message}`, 'error');
                     } finally {
                         btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-pdf"></i> Gerar PDF`;
                     }
@@ -769,7 +817,7 @@
                         eventHandlers.handleFileDownload(blob, 'relatorio_geral_salc.xlsx');
                     } catch (error)
                     {
-                        uiComponents.openModal('Erro ao Exportar Relatório', `<p>${error.message}</p>`);
+                        uiComponents.showToast(`Erro ao exportar para Excel: ${error.message}`, 'error');
                     } finally {
                         btn.disabled = false; btn.innerHTML = `<i class="fas fa-file-excel"></i> Exportar para Excel`;
                     }
@@ -790,7 +838,7 @@
                         const blob = await apiService.download(`/relatorios/excel/${type}?${params.toString()}`);
                         eventHandlers.handleFileDownload(blob, `relatorio_${type}.xlsx`);
                     } catch (error) {
-                        uiComponents.openModal('Erro ao Exportar', `<p>${error.message}</p>`);
+                        uiComponents.showToast(`Erro ao exportar: ${error.message}`, 'error');
                     } finally {
                         btn.disabled = false; btn.innerHTML = originalHtml;
                     }
