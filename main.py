@@ -7,13 +7,12 @@ from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc, Boolean
+from pydantic import BaseModel, EmailStr, Field, validator
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, DateTime, Enum as SQLAlchemyEnum, desc
 from sqlalchemy.orm import sessionmaker, Session, relationship, DeclarativeBase, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
-import pandas as pd
 
 # --- Segurança e Autenticação ---
 from jose import JWTError, jwt
@@ -72,6 +71,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     role = Column(SQLAlchemyEnum(UserRole), nullable=False, default=UserRole.OPERADOR)
 
@@ -110,8 +110,6 @@ class Empenho(Base):
     valor = Column(Float, nullable=False)
     data_empenho = Column(Date)
     observacao = Column(String, nullable=True)
-    status = Column(String, nullable=True, index=True)
-    is_fake = Column(Boolean, default=False, nullable=False)
     nota_credito_id = Column(Integer, ForeignKey("notas_credito.id", ondelete="CASCADE"))
     secao_requisitante_id = Column(Integer, ForeignKey("secoes.id", ondelete="RESTRICT"))
 
@@ -157,6 +155,7 @@ class Token(BaseModel):
 
 class UserBase(BaseModel):
     username: str
+    email: EmailStr
 
 class UserCreate(UserBase):
     password: str
@@ -218,19 +217,17 @@ class NotaCreditoInDB(NotaCreditoBase):
 
 class EmpenhoBase(BaseModel):
     numero_ne: str
-    valor: float = Field(..., ge=0)
+    valor: float = Field(..., gt=0)
     data_empenho: date
     observacao: Optional[str] = None
     nota_credito_id: int
     secao_requisitante_id: int
-    is_fake: bool = False
 
 class EmpenhoCreate(EmpenhoBase):
     pass
 
 class EmpenhoInDB(EmpenhoBase):
     id: int
-    status: Optional[str] = None
     secao_requisitante: SeçãoInDB
     nota_credito: NotaCreditoInDB 
     class Config:
@@ -283,7 +280,7 @@ class PaginatedEmpenhos(BaseModel):
 # 5. APLICAÇÃO FastAPI E EVENTO DE STARTUP
 # ==============================================================================
 
-app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.7.0")
+app = FastAPI(title="Sistema de Gestão de Notas de Crédito", version="2.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -293,34 +290,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
 @app.on_event("startup")
 def on_startup():
-    print("Iniciando aplicação...")
+    print("Iniciando aplicação e criando tabelas da base de dados, se necessário...")
     Base.metadata.create_all(bind=engine)
-    print("Tabelas criadas (se não existiam).")
-
-    db = SessionLocal()
-    try:
-        user = db.query(User).first()
-        if user is None:
-            print("Nenhum usuário encontrado. Criando usuário 'admin' padrão...")
-            default_admin = User(
-                username="admin",
-                hashed_password=get_password_hash("admin1234"),
-                role=UserRole.ADMINISTRADOR
-            )
-            db.add(default_admin)
-            db.commit()
-            print("Usuário 'admin' criado com sucesso. Use a senha 'admin1234' para o primeiro login.")
-        else:
-            print("Usuário(s) já existente(s). Nenhum usuário padrão foi criado.")
-    finally:
-        db.close()
-    
     print("Aplicação iniciada com sucesso.")
+
 
 # ==============================================================================
 # 6. UTILITÁRIOS E DEPENDÊNCIAS
@@ -339,6 +314,9 @@ def log_audit_action(db: Session, username: str, action: str, details: str = Non
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -404,10 +382,12 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
 def create_user(user: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(get_current_admin_user)):
     if db.query(User).filter(User.username == user.username).first():
         raise HTTPException(status_code=400, detail="Nome de utilizador já existe")
+    if db.query(User).filter(User.email == user.email).first():
+        raise HTTPException(status_code=400, detail="E-mail já registado")
 
     try:
         hashed_password = get_password_hash(user.password)
-        new_user = User(username=user.username, hashed_password=hashed_password, role=user.role)
+        new_user = User(username=user.username, email=user.email, hashed_password=hashed_password, role=user.role)
         db.add(new_user)
         log_audit_action(db, admin_user.username, "USER_CREATED", f"Utilizador '{user.username}' criado com perfil '{user.role.value}'.")
         db.commit()
@@ -509,28 +489,17 @@ def create_nota_credito(nc_in: NotaCreditoCreate, db: Session = Depends(get_db),
 @app.get("/notas-credito", response_model=PaginatedNCS, summary="Lista e filtra as Notas de Crédito", tags=["Notas de Crédito"])
 def read_notas_credito(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=1000), search: Optional[str] = Query(None), plano_interno: Optional[str] = Query(None), 
-    nd: Optional[str] = Query(None), secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
+    size: int = Query(10, ge=1, le=1000), plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
+    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
 ):
     query = db.query(NotaCredito).options(joinedload(NotaCredito.secao_responsavel))
-    if search: query = query.filter(NotaCredito.numero_nc.ilike(f"%{search}%"))
-    if plano_interno: query = query.filter(NotaCredito.plano_interno == plano_interno)
-    if nd: query = query.filter(NotaCredito.nd == nd)
+    if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
+    if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
     if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
     if status: query = query.filter(NotaCredito.status == status)
     total = query.count()
     results = query.order_by(desc(NotaCredito.data_chegada)).offset((page - 1) * size).limit(size).all()
     return {"total": total, "page": page, "size": size, "results": results}
-
-@app.get("/notas-credito/distinct/plano-interno", response_model=List[str], summary="Obtém Planos Internos únicos", tags=["Notas de Crédito"])
-def get_distinct_plano_interno(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    results = db.query(NotaCredito.plano_interno).distinct().order_by(NotaCredito.plano_interno).all()
-    return [result[0] for result in results if result[0]]
-
-@app.get("/notas-credito/distinct/nd", response_model=List[str], summary="Obtém Naturezas de Despesa únicas", tags=["Notas de Crédito"])
-def get_distinct_nd(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    results = db.query(NotaCredito.nd).distinct().order_by(NotaCredito.nd).all()
-    return [result[0] for result in results if result[0]]
 
 @app.get("/notas-credito/{nc_id}", response_model=NotaCreditoInDB, summary="Obtém detalhes de uma Nota de Crédito", tags=["Notas de Crédito"])
 def read_nota_credito(nc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -616,13 +585,12 @@ def create_empenho(empenho_in: EmpenhoCreate, db: Session = Depends(get_db), cur
 @app.get("/empenhos", response_model=PaginatedEmpenhos, summary="Lista e filtra Empenhos", tags=["Empenhos"])
 def read_empenhos(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user), page: int = Query(1, ge=1),
-    size: int = Query(10, ge=1, le=1000), search: Optional[str] = Query(None), nota_credito_id: Optional[int] = Query(None)
+    size: int = Query(10, ge=1, le=1000), nota_credito_id: Optional[int] = Query(None)
 ):
     query = db.query(Empenho).options(
         joinedload(Empenho.secao_requisitante),
         joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel)
     )
-    if search: query = query.filter(Empenho.numero_ne.ilike(f"%{search}%"))
     if nota_credito_id:
         query = query.filter(Empenho.nota_credito_id == nota_credito_id)
     total = query.count()
@@ -655,26 +623,18 @@ def create_anulacao(anulacao_in: AnulacaoEmpenhoBase, db: Session = Depends(get_
     db_empenho = db.query(Empenho).filter(Empenho.id == anulacao_in.empenho_id).with_for_update().first()
     if not db_empenho:
         raise HTTPException(status_code=404, detail="Empenho a ser anulado não encontrado.")
-    
-    if anulacao_in.valor > db_empenho.valor:
-        raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {db_empenho.valor:,.2f}).")
-    
+    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).filter(AnulacaoEmpenho.empenho_id == db_empenho.id).scalar() or 0
+    saldo_empenho = db_empenho.valor - soma_anulacoes
+    if anulacao_in.valor > saldo_empenho:
+        raise HTTPException(status_code=400, detail=f"Valor da anulação (R$ {anulacao_in.valor:,.2f}) excede o saldo executado do empenho (R$ {saldo_empenho:,.2f}).")
     db_nc = db.query(NotaCredito).filter(NotaCredito.id == db_empenho.nota_credito_id).with_for_update().first()
     if db_nc:
         db_nc.saldo_disponivel += anulacao_in.valor
         if db_nc.status == "Totalmente Empenhada":
             db_nc.status = "Ativa"
-
-    db_empenho.valor -= anulacao_in.valor
-    if db_empenho.valor < 0.01:
-        db_empenho.valor = 0
-        db_empenho.status = "Anulação Total Realizada"
-    else:
-        db_empenho.status = "Anulação Parcial Realizada"
-
     db_anulacao = AnulacaoEmpenho(**anulacao_in.dict())
     db.add(db_anulacao)
-    log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'. Saldo do empenho agora é R$ {db_empenho.valor:,.2f}.")
+    log_audit_action(db, current_user.username, "ANULACAO_CREATED", f"Anulação de R$ {anulacao_in.valor:,.2f} no empenho '{db_empenho.numero_ne}'.")
     db.commit()
     db.refresh(db_anulacao)
     return db_anulacao
@@ -709,19 +669,16 @@ def read_recolhimentos(nota_credito_id: int, db: Session = Depends(get_db), curr
 
 @app.get("/dashboard/kpis", summary="Retorna os KPIs principais do dashboard", tags=["Dashboard"])
 def get_dashboard_kpis(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    try:
-        saldo_total_nc = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
-        ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
-        valor_total_empenhos_fake = db.query(func.sum(Empenho.valor)).filter(Empenho.is_fake == True).scalar() or 0.0
-
-        return {
-            "saldo_disponivel_total": saldo_total_nc,
-            "ncs_ativas": ncs_ativas,
-            "valor_total_empenhos_fake": valor_total_empenhos_fake
-        }
-    except Exception as e:
-        print(f"ERRO EM /dashboard/kpis: {e}")
-        raise HTTPException(status_code=500, detail="Erro interno ao processar os KPIs do dashboard.")
+    saldo_total = db.query(func.sum(NotaCredito.saldo_disponivel)).scalar() or 0.0
+    ncs_ativas = db.query(NotaCredito).filter(NotaCredito.status == "Ativa").count()
+    soma_empenhos = db.query(func.sum(Empenho.valor)).scalar() or 0.0
+    soma_anulacoes = db.query(func.sum(AnulacaoEmpenho.valor)).scalar() or 0.0
+    valor_empenhado_liquido = (soma_empenhos or 0.0) - (soma_anulacoes or 0.0)
+    return {
+        "saldo_disponivel_total": saldo_total,
+        "valor_empenhado_total": valor_empenhado_liquido,
+        "ncs_ativas": ncs_ativas
+    }
 
 @app.get("/dashboard/avisos", response_model=List[NotaCreditoInDB], summary="Retorna NCs com prazo de empenho próximo", tags=["Dashboard"])
 def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -731,170 +688,6 @@ def get_dashboard_avisos(db: Session = Depends(get_db), current_user: User = Dep
         NotaCredito.status == "Ativa"
     ).order_by(NotaCredito.prazo_empenho).all()
     return avisos
-
-def get_all_data_for_report(db: Session, model, filters: dict):
-    query = db.query(model)
-    if model == NotaCredito:
-        query = query.options(joinedload(NotaCredito.secao_responsavel))
-        if filters.get("plano_interno"): query = query.filter(NotaCredito.plano_interno.ilike(f"%{filters['plano_interno']}%"))
-        if filters.get("nd"): query = query.filter(NotaCredito.nd.ilike(f"%{filters['nd']}%"))
-        if filters.get("secao_responsavel_id"): query = query.filter(NotaCredito.secao_responsavel_id == filters['secao_responsavel_id'])
-        if filters.get("status"): query = query.filter(NotaCredito.status == filters['status'])
-        query = query.order_by(desc(NotaCredito.data_chegada))
-    elif model == Empenho:
-        query = query.options(joinedload(Empenho.secao_requisitante), joinedload(Empenho.nota_credito).joinedload(NotaCredito.secao_responsavel))
-        query = query.order_by(desc(Empenho.data_empenho))
-    return query.all()
-
-@app.get("/relatorios/excel/notas-credito", summary="Exporta Notas de Crédito para Excel", tags=["Relatórios"])
-def export_nc_excel(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
-    plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None)
-):
-    filters = {
-        "plano_interno": plano_interno, "nd": nd,
-        "secao_responsavel_id": secao_responsavel_id, "status": status
-    }
-    ncs = get_all_data_for_report(db, NotaCredito, filters)
-    
-    data_to_export = [{
-        "Nº da NC": nc.numero_nc, "Plano Interno": nc.plano_interno, "ND": nc.nd,
-        "Seção Responsável": nc.secao_responsavel.nome, "Valor Original (R$)": nc.valor,
-        "Saldo Disponível (R$)": nc.saldo_disponivel, "Status": nc.status,
-        "Data de Chegada": nc.data_chegada.strftime('%d/%m/%Y'),
-        "Prazo para Empenho": nc.prazo_empenho.strftime('%d/%m/%Y'),
-        "Esfera": nc.esfera, "Fonte": nc.fonte, "PTRES": nc.ptres,
-        "Descrição": nc.descricao
-    } for nc in ncs]
-
-    df = pd.DataFrame(data_to_export)
-    
-    if not df.empty:
-        total_row = pd.DataFrame([{
-            "Nº da NC": "TOTAL GERAL",
-            "Valor Original (R$)": df["Valor Original (R$)"].sum(),
-            "Saldo Disponível (R$)": df["Saldo Disponível (R$)"].sum()
-        }])
-        df = pd.concat([df, total_row], ignore_index=True)
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Notas de Crédito')
-    
-    log_audit_action(db, current_user.username, "NC_EXPORT_EXCEL", f"Exportação de {len(ncs)} NCs.")
-    db.commit()
-
-    headers = {'Content-Disposition': 'attachment; filename="relatorio_notas_credito.xlsx"'}
-    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
-
-@app.get("/relatorios/excel/empenhos", summary="Exporta Empenhos para Excel", tags=["Relatórios"])
-def export_empenhos_excel(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
-):
-    empenhos = get_all_data_for_report(db, Empenho, {})
-    
-    data_to_export = [{
-        "Nº do Empenho": e.numero_ne, "NC Associada": e.nota_credito.numero_nc,
-        "Seção Requisitante": e.secao_requisitante.nome, "Valor (R$)": e.valor,
-        "Data do Empenho": e.data_empenho.strftime('%d/%m/%Y'), "É Fake?": "Sim" if e.is_fake else "Não",
-        "Status": e.status or "OK", "Observação": e.observacao
-    } for e in empenhos]
-    
-    df = pd.DataFrame(data_to_export)
-
-    if not df.empty:
-        total_row = pd.DataFrame([{"Nº do Empenho": "TOTAL GERAL", "Valor (R$)": df["Valor (R$)"].sum()}])
-        df = pd.concat([df, total_row], ignore_index=True)
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Empenhos')
-        
-    log_audit_action(db, current_user.username, "EMPENHO_EXPORT_EXCEL", f"Exportação de {len(empenhos)} empenhos.")
-    db.commit()
-
-    headers = {'Content-Disposition': 'attachment; filename="relatorio_empenhos.xlsx"'}
-    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
-
-@app.get("/relatorios/excel/geral", summary="Exporta um relatório consolidado para Excel", tags=["Relatórios"])
-def export_geral_excel(
-    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
-    plano_interno: Optional[str] = Query(None), nd: Optional[str] = Query(None),
-    secao_responsavel_id: Optional[int] = Query(None), status: Optional[str] = Query(None),
-    incluir_detalhes: bool = Query(False)
-):
-    query = db.query(NotaCredito).options(
-        joinedload(NotaCredito.secao_responsavel),
-        joinedload(NotaCredito.empenhos).joinedload(Empenho.secao_requisitante),
-        joinedload(NotaCredito.recolhimentos)
-    ).order_by(NotaCredito.plano_interno)
-    
-    if plano_interno: query = query.filter(NotaCredito.plano_interno.ilike(f"%{plano_interno}%"))
-    if nd: query = query.filter(NotaCredito.nd.ilike(f"%{nd}%"))
-    if secao_responsavel_id: query = query.filter(NotaCredito.secao_responsavel_id == secao_responsavel_id)
-    if status: query = query.filter(NotaCredito.status.ilike(f"%{status}%"))
-    ncs = query.all()
-
-    data_to_export = []
-    for nc in ncs:
-        data_to_export.append({
-            "Tipo de Registro": "Nota de Crédito",
-            "Nº NC / NE": nc.numero_nc,
-            "Plano Interno": nc.plano_interno,
-            "ND": nc.nd,
-            "Seção": nc.secao_responsavel.nome,
-            "Valor (R$)": nc.valor,
-            "Saldo Disponível (R$)": nc.saldo_disponivel,
-            "Data": nc.prazo_empenho.strftime('%d/%m/%Y'),
-            "Status / Obs": nc.status,
-        })
-        if incluir_detalhes:
-            for e in nc.empenhos:
-                data_to_export.append({
-                    "Tipo de Registro": ">> Empenho",
-                    "Nº NC / NE": e.numero_ne,
-                    "Plano Interno": "", "ND": "",
-                    "Seção": e.secao_requisitante.nome,
-                    "Valor (R$)": e.valor,
-                    "Saldo Disponível (R$)": "",
-                    "Data": e.data_empenho.strftime('%d/%m/%Y'),
-                    "Status / Obs": e.status or ('FAKE' if e.is_fake else ''),
-                })
-            for r in nc.recolhimentos:
-                 data_to_export.append({
-                    "Tipo de Registro": ">> Recolhimento",
-                    "Nº NC / NE": "", "Plano Interno": "", "ND": "", "Seção": "",
-                    "Valor (R$)": r.valor,
-                    "Saldo Disponível (R$)": "",
-                    "Data": r.data.strftime('%d/%m/%Y'),
-                    "Status / Obs": r.observacao or '',
-                })
-
-    df = pd.DataFrame(data_to_export)
-    
-    if not df.empty:
-        nc_df = df[df['Tipo de Registro'] == 'Nota de Crédito']
-        total_valor = nc_df['Valor (R$)'].sum()
-        total_saldo = nc_df['Saldo Disponível (R$)'].sum()
-        
-        total_row = pd.DataFrame([{
-            "Tipo de Registro": "TOTAL GERAL",
-            "Valor (R$)": total_valor,
-            "Saldo Disponível (R$)": total_saldo
-        }])
-        df = pd.concat([df, total_row], ignore_index=True)
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Relatório Geral')
-    
-    log_audit_action(db, current_user.username, "GENERAL_REPORT_EXCEL", f"Exportação de relatório geral com {len(ncs)} NCs.")
-    db.commit()
-
-    headers = {'Content-Disposition': 'attachment; filename="relatorio_geral_salc.xlsx"'}
-    return Response(content=output.getvalue(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
-
 
 @app.get("/relatorios/pdf", summary="Gera um relatório consolidado em PDF", tags=["Relatórios"])
 def get_relatorio_pdf(
@@ -950,45 +743,36 @@ def get_relatorio_pdf(
         ]))
         elements.append(tbl)
         
-        if incluir_detalhes and (nc.empenhos or nc.recolhimentos):
-            elements.append(Spacer(1, 0.1*inch))
-            details_data = []
+        if incluir_detalhes:
             if nc.empenhos:
-                details_data.append([Paragraph("<b>Empenhos da NC</b>", styles['Normal']), "", "", "", ""])
-                details_data.append(["Nº da NE", "Valor (Saldo)", "Data", "Status", "Observação"])
+                elements.append(Spacer(1, 0.1*inch))
+                empenhos_data = [["<b>Empenhos da NC</b>", "", "", ""], ["Nº da NE", "Valor", "Data", "Observação"]]
                 for e in nc.empenhos:
-                    status_empenho = e.status or ('FAKE' if e.is_fake else 'OK')
-                    details_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), status_empenho, e.observacao or ''])
-            
+                    empenhos_data.append([e.numero_ne, f"R$ {e.valor:,.2f}", e.data_empenho.strftime('%d/%m/%Y'), e.observacao or ''])
+                
+                empenhos_tbl = Table(empenhos_data, colWidths=[2.7*inch, 2.7*inch, 2.7*inch, 2.7*inch])
+                empenhos_tbl.setStyle(TableStyle([
+                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
+                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
+                ]))
+                elements.append(empenhos_tbl)
+
             if nc.recolhimentos:
-                details_data.append([Paragraph("<b>Recolhimentos da NC</b>", styles['Normal']), "", ""])
-                details_data.append(["Valor", "Data", "Observação"])
+                elements.append(Spacer(1, 0.1*inch))
+                recolhimentos_data = [["<b>Recolhimentos da NC</b>", "", ""], ["Valor", "Data", "Observação"]]
                 for r in nc.recolhimentos:
-                    details_data.append([f"R$ {r.valor:,.2f}", r.data.strftime('%d/%m/%Y'), r.observacao or ''])
+                    recolhimentos_data.append([f"R$ {r.valor:,.2f}", r.data.strftime('%d/%m/%Y'), r.observacao or ''])
 
-            details_tbl = Table(details_data)
-            elements.append(details_tbl)
-
+                recolhimentos_tbl = Table(recolhimentos_data, colWidths=[3.6*inch, 3.6*inch, 3.6*inch])
+                recolhimentos_tbl.setStyle(TableStyle([
+                    ('SPAN', (0,0), (-1,0)), ('ALIGN', (0,0), (-1,0), 'CENTER'),
+                    ('BACKGROUND', (0, 1), (-1, 1), colors.lightgrey),
+                    ('GRID', (0,1), (-1,-1), 1, colors.grey),
+                ]))
+                elements.append(recolhimentos_tbl)
+        
         elements.append(Spacer(1, 0.2*inch))
-
-    if ncs:
-        total_valor_geral = sum(nc.valor for nc in ncs)
-        total_saldo_disponivel = sum(nc.saldo_disponivel for nc in ncs)
-
-        elements.append(Spacer(1, 0.4*inch))
-        
-        total_data = [[
-            Paragraph(f"<b>TOTAL GERAL (VALOR ORIGINAL):</b> R$ {total_valor_geral:,.2f}", styles['Normal']),
-            Paragraph(f"<b>TOTAL GERAL (SALDO DISPONÍVEL):</b> R$ {total_saldo_disponivel:,.2f}", styles['Normal']),
-        ]]
-        
-        total_tbl = Table(total_data, colWidths=[5.4*inch, 5.4*inch])
-        total_tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, -1), colors.lightgrey),
-            ('GRID', (0,0), (-1,-1), 1, colors.black),
-            ('BOX', (0,0), (-1,-1), 2, colors.black),
-        ]))
-        elements.append(total_tbl)
 
     if not ncs:
         elements.append(Paragraph("Nenhuma Nota de Crédito encontrada para os filtros selecionados.", styles['Normal']))
